@@ -253,6 +253,8 @@ function buildNav() {
 }
 function go(view) {
   curView = view;
+  try { localStorage.setItem("gs_curView", view); } catch(e) {}
+  curView = view;
   $$(".view").forEach(v => v.classList.remove("active"));
   const el = $("#view-" + view);
   if (!el) return;
@@ -344,7 +346,7 @@ renderers.vente = async function () {
   const curF = selF.value;
   selF.innerHTML = `<option value="">Toutes les familles</option>` + [...new Set(DB.produits.map(p => p.famille).filter(Boolean))].map(fm => `<option ${curF === fm ? "selected" : ""}>${esc(fm)}</option>`).join("");
   renderCaisseBar();
-  if (DB.caisse) { renderVenteGrid(); renderCart(); }
+  if (DB.caisse) { renderVenteGrid(); renderCart(); setTimeout(function() { var vs = document.getElementById("venteSearch"); if (vs) { vs.focus(); vs.select(); } }, 100); }
 };
 function fillModeSelect() {
   const sel = $("#cartMode");
@@ -413,68 +415,57 @@ function versementForm(c) {
 }
 function clotureForm(c) {
   const rows = (c.versements || []).map(v => `<tr><td>${fmtDate(v.date)}</td><td class="num">${money(v.montant)}</td><td>${esc(modeLabel(v.mode))}</td><td>${esc(v.motif || "-")}</td></tr>`).join("");
-  openModal(`<h3>🔴 Clôturer votre caisse</h3>
+  openModal(`<h3>Cloturer votre caisse</h3>
     <div class="cards" style="margin:8px 0">
-      <div class="card"><div class="k">Fonds de départ</div><div class="v">${money(c.fonds_initial)}</div></div>
-      <div class="card"><div class="k">Ventes espèces</div><div class="v">${money(c.especes)}</div></div>
-      <div class="card"><div class="k">Versé (espèces)</div><div class="v">${money(c.verse_especes)}</div></div>
-      <div class="card"><div class="k">Versé (espèces)</div><div class="v">${money(m.total)}</div></div>
-      <tr style="font-weight:800"><td>Total des ventes</td><td class="num">${money(c.total)}</td><td class="num">${c.tickets}</td></tr>
-    </table></div>
-    ${rows ? `<h4 style="margin-top:10px">Versements effectués</h4><div class="table-wrap"><table><tr><th>Date</th><th class="num">Montant</th><th>Mode</th><th>Motif</th></tr>${rows}</table></div>` : ""}
-    <p class="muted" style="margin-top:8px">${esc(reglePoint())} - Comptez votre tiroir (espèces) et saisissez le montant trouvé : l'écart est calculé automatiquement.</p>
-    <label class="field">💵 Argent compté dans le tiroir (F) <input id="ctCompte" type="number" min="0" value="${c.attendu_especes}"></label>
-    <label class="field">Notes <input id="ctNotes" placeholder="ex. écart expliqué..."></label>
+      <div class="card"><div class="k">Fonds de depart</div><div class="v">${money(c.fonds_initial)}</div></div>
+      <div class="card"><div class="k">Ventes especes</div><div class="v">${money(c.especes)}</div></div>
+      <div class="card"><div class="k">Verse (especes)</div><div class="v">${money(c.verse_especes)}</div></div>
+      <div class="card"><div class="k">Total ventes</div><div class="v">${money(c.total)}</div></div>
+    </div>
+    <div class="table-wrap"><table><tr><th>Date</th><th class="num">Montant</th><th>Mode</th><th>Motif</th></tr>${rows || `<tr><td colspan="4" class="empty">Aucun versement</td></tr>`}</table></div>
+    <p class="muted" style="margin-top:8px">Comptez votre tiroir (especes) et saisissez le montant trouve.</p>
+    <label class="field">Argent compte dans le tiroir (F) <input id="ctCompte" type="number" min="0" value="${c.attendu_especes}"></label>
+    <label class="field">Notes <input id="ctNotes" placeholder="ex. ecart explique..."></label>
     <p id="ctWarn" class="error hidden"></p>
-    <div class="row"><button class="btn danger grow" id="ctSave">🔴 Clôturer la caisse</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
+    <div class="row"><button class="btn danger grow" id="ctSave">Cloturer la caisse</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
   const syncClot = () => {
-    const ecart = (Number($("#ctCompte").value) || 0) - c.attendu_especes;
-    const note = $("#ctNotes").value.trim();
-    const w = $("#ctWarn");
+    const ecart = (Number(document.getElementById("ctCompte").value) || 0) - c.attendu_especes;
+    const note = document.getElementById("ctNotes").value.trim();
+    const w = document.getElementById("ctWarn");
     if (ecart !== 0) {
       w.classList.remove("hidden");
-      w.textContent = `⚠️ Écart de ${ecart > 0 ? "+" : ""}${money(ecart)} détecté - l'explication est obligatoire pour clôturer.`;
-      $("#ctSave").disabled = !note;
-    } else { w.classList.add("hidden"); $("#ctSave").disabled = false; }
+      w.textContent = "Ecart de " + (ecart > 0 ? "+" : "") + money(ecart) + " - explication obligatoire."; document.getElementById("ctSave").disabled = !note;
+    } else { w.classList.add("hidden"); document.getElementById("ctSave").disabled = false; }
   };
-  $("#ctCompte").addEventListener("input", syncClot);
-  $("#ctNotes").addEventListener("input", syncClot);
+  document.getElementById("ctCompte").addEventListener("input", syncClot);
+  document.getElementById("ctNotes").addEventListener("input", syncClot);
   syncClot();
-  $("#ctSave").addEventListener("click", async () => {
-    const btn = $("#ctSave"); btn.disabled = true;
+  document.getElementById("ctSave").addEventListener("click", async () => {
+    const btn = document.getElementById("ctSave"); btn.disabled = true;
     try {
-      const r = await api(`/caisse/${c.id}/cloturer`, { method: "POST", body: JSON.stringify({ compte: Number($("#ctCompte").value) || 0, notes: $("#ctNotes").value }) });
-      cart = [];
-      closeModal();
-      openModal(`<h3>✅ Caisse clôturée</h3>
-        <div class="ticket-preview"><pre style="font-family:'Courier New',monospace">CLÔTURE DE CAISSE
+      const r = await api(`/caisse/${c.id}/cloturer`, { method: "POST", body: JSON.stringify({ compte: Number(document.getElementById("ctCompte").value) || 0, notes: document.getElementById("ctNotes").value }) });
+      cart = []; closeModal();
+      openModal(`<h3>Caisse cloturee</h3>
+        <div class="ticket-preview"><pre style="font-family:'Courier New',monospace">CLOTURE DE CAISSE
 ${new Date().toLocaleString("fr-FR")}
-Caissière : ${esc(cur.nom)}
-Ouverte à : ${new Date(c.ouverte_le).toLocaleTimeString("fr-FR")}
+Caissiere : ${esc(cur.nom)}
 Fonds : ${money(c.fonds_initial)}
 Ventes : ${money(c.total)} (${c.tickets} tickets)
-Espèces attendues : ${money(r.total_attendu)}
-Montant compté : ${money(r.total_compte)}
-Écart : ${r.ecart >= 0 ? "+" : ""}${money(r.ecart)}
-${r.ecart !== 0 ? "⚠️ ÉCART À VÉRIFIER" : "✓ Aucun écart"}
-${esc(r.notes || "")}</pre></div>
+Especes attendues : ${money(r.total_attendu)}
+Montant compte : ${money(r.total_compte)}
+Ecart : ${r.ecart >= 0 ? "+" : ""}${money(r.ecart)}
+${r.ecart !== 0 ? "ECART A VERIFIER" : "Aucun ecart"}</pre></div>
         <div class="row" style="margin-top:12px">
-          <button class="btn primary grow" id="ctPrintBtn">🖨️ Imprimer le reçu</button>
+          <button class="btn primary grow" id="ctPrintBtn">Imprimer le recu</button>
           <button class="btn ghost grow" onclick="closeModal()">Fermer</button>
         </div>`);
-      $("#ctPrintBtn").addEventListener("click", () => imprimer("Reçu de clôture", `<pre style="font-family:'Courier New',monospace">CLÔTURE DE CAISSE\n${new Date().toLocaleString("fr-FR")}\nCaissière : ${esc(cur.nom)}\nOuverte à : ${new Date(c.ouverte_le).toLocaleTimeString("fr-FR")}\nFonds : ${money(c.fonds_initial)}\nVentes : ${money(c.total)} (${c.tickets} tickets)\nEspèces attendues : ${money(r.total_attendu)}\nMontant compté : ${money(r.total_compte)}\nÉcart : ${r.ecart >= 0 ? "+" : ""}${money(r.ecart)}\n${r.ecart !== 0 ? "⚠️ ÉCART À VÉRIFIER" : "✓ Aucun écart"}</pre>`, "80mm"));
-      if (usbPrinter) {
-        const rec = { user_nom: cur.nom, ouverte_le: c.ouverte_le, fermee_le: r.fermee_le, fonds_initial: c.fonds_initial, total: r.total, tickets: r.tickets, total_attendu: r.total_attendu, total_compte: r.total_compte, ecart: r.ecart, notes: r.notes };
-        const tb = document.createElement("button");
-        tb.className = "btn success grow"; tb.textContent = "🧾 Imprimante thermique";
-        tb.addEventListener("click", () => printThermalCloture(rec));
-        $("#ctPrintBtn").parentElement.appendChild(tb);
-      }
-      renderers.vente().catch(() => { });
+      document.getElementById("ctPrintBtn").addEventListener("click", () => imprimer("Recu de cloture", `<pre style="font-family:'Courier New',monospace">CLOTURE DE CAISSE\n${new Date().toLocaleString("fr-FR")}\nCaissiere : ${esc(cur.nom)}\nFonds : ${money(c.fonds_initial)}\nVentes : ${money(c.total)} (${c.tickets} tickets)\nEspeces attendues : ${money(r.total_attendu)}\nMontant compte : ${money(r.total_compte)}\nEcart : ${r.ecart >= 0 ? "+" : ""}${money(r.ecart)}</pre>`, "80mm"));
+      renderers.vente().catch(() => {});
     } catch (e) { toast(e.message); }
     btn.disabled = false;
   });
 }
+
 function renderVenteGrid() {
   const f = venteFilter.toLowerCase();
   const fam = $("#venteFamille") ? $("#venteFamille").value : "";
@@ -919,7 +910,7 @@ function renderStProduits(box, prods) {
     <div class="row wrap" style="margin-bottom:8px">
       <label class="field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="stFaible" style="width:auto" ${stockFaible ? "checked" : ""}> Stock faible uniquement</label>
       <label class="field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="stInactifs" style="width:auto" ${stockInactifs ? "checked" : ""}> Inclure les produits inactifs</label>
-      <button class="btn small primary" id="famBtn">🏷️ Gérer les familles</button>
+      
       <button class="btn small" id="stCsv">⬇️ CSV produits</button>
     </div>
     ${shown.length > 0 ? pgBar("stProduits", shown.length, "produit(s)") : ""}
@@ -942,7 +933,7 @@ function renderStProduits(box, prods) {
     </table></div>`;
   $("#stFaible").addEventListener("change", e => { stockFaible = e.target.checked; renderers.stock().catch(() => { }); });
   $("#stInactifs").addEventListener("change", e => { stockInactifs = e.target.checked; renderers.stock().catch(() => { }); });
-  $("#famBtn").addEventListener("click", famManager);
+  
   $("#stCsv").addEventListener("click", () => {
     const lines = [["Nom", "Famille", "Code-barres", "Prix achat", "Prix vente", "Stock", "Seuil min"]].concat(prods.map(p => [p.nom, p.famille || "", p.code || "", p.prix_achat, p.prix_vente, p.stock, p.stock_min]));
     downloadCsv("produits.csv", lines);
@@ -1205,6 +1196,7 @@ function downloadCsv(nom, lines) {
   a.download = nom; a.click();
 }
 function lotForm(p) {
+  if (!p.gere_par_lot) { toast("Ce produit n'est pas gere par lot"); return; }
   openModal(`<h3>🧊 Ajouter un lot - ${esc(p.nom)}</h3>
     <label class="field">N° de lot * <input id="ltNum" placeholder="ex. L2024-001"></label>
     <label class="field">Quantité <input id="ltQte" type="number" min="1" value="1"></label>
@@ -2430,6 +2422,8 @@ function bind() {
   $("#cartRemise").addEventListener("input", renderCart);
   $("#cartMode").addEventListener("change", renderCart);
   $("#cartRecu").addEventListener("input", renderCart);
+  if (document.getElementById("cartRecu")) document.getElementById("cartRecu").addEventListener("focus", function() { if (Number(this.value) === 0) this.value = ""; });
+  if (document.getElementById("cartRecu")) document.getElementById("cartRecu").addEventListener("blur", function() { if (!this.value) { this.value = 0; renderCart(); } });
   if ($("#cartRecu")) $("#cartRecu").addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); encaisser(); } });
   $("#venteSearch").addEventListener("input", e => { venteFilter = e.target.value; renderVenteGrid(); });
   $("#venteSearch").addEventListener("keydown", e => { if (e.key === "Enter" && venteFilter) { if (addByCode(venteFilter)) $("#venteSearch").value = ""; } });
