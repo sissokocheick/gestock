@@ -165,7 +165,7 @@ app.get("/api/parametres", async (req, res) => {
   res.json(rows);
 });
 app.put("/api/parametres", auth, need("R_PARAMS"), async (req, res) => {
-  const keys = ["ticket_width", "ticket_barcode", "show_demo", "remise_max_pct"];
+  const keys = ["ticket_width", "ticket_barcode", "show_demo", "remise_max_pct", "versement_validateur"];
   for (const k of keys) {
     if (req.body[k] !== undefined) {
       await pool.query("INSERT INTO parametres(cle, valeur) VALUES($1,$2) ON CONFLICT (cle) DO UPDATE SET valeur=EXCLUDED.valeur",
@@ -923,10 +923,13 @@ async function caisseAggregate(id) {
     `SELECT COALESCE(SUM(vc.montant),0) AS esp FROM versements_caisse vc
      JOIN modes_paiement mp ON mp.code = vc.mode AND mp.especes WHERE vc.caisse_id=$1`, [id]);
   const verseEsp = Number(vs.esp);
+  const { rows: [pending] } = await pool.query(
+    "SELECT COALESCE(SUM(vc.montant),0) AS p FROM versements_caisse vc WHERE vc.caisse_id=$1 AND vc.statut='en_attente'", [id]);
+  const verseEnAttente = Number(pending.p);
   const verseTot = versements.reduce((s, v) => s + Number(v.montant), 0);
   const attendu = Number(c.fonds_initial) + Number(t.especes) - verseEsp;
   return { ...c, especes: Number(t.especes), autres: Number(t.autres), total: Number(t.total), tickets: t.tickets,
-           parMode, versements, verse_especes: verseEsp, verse_total: verseTot, attendu_especes: attendu };
+           parMode, versements, verse_especes: verseEsp, verse_total: verseTot, verse_en_attente: verseEnAttente, attendu_especes: attendu };
 }
 
 app.post("/api/caisse/ouvrir", auth, need("R_VENTE"), async (req, res) => {
@@ -985,10 +988,11 @@ app.post("/api/caisse/:id/versement", auth, async (req, res) => {
   const { rows: [modeRow] } = await pool.query("SELECT code FROM modes_paiement WHERE code=$1 AND actif", [req.body.mode]);
   const mode = modeRow ? modeRow.code : "especes";
   await tx(req.user.id, c2 => c2.query(
-    "INSERT INTO versements_caisse(caisse_id, montant, mode, motif, user_id) VALUES($1,$2,$3,$4,$5)",
+    "INSERT INTO versements_caisse(caisse_id, montant, mode, motif, user_id, statut) VALUES($1,$2,$3,$4,$5,'en_attente')",
     [c.id, m, mode, String(req.body.motif || "").trim() || null, req.user.id]));
   broadcast({ type: "caisse" });
-  res.json({ ok: true });
+  broadcast({ type: "versement_demande" });
+  res.json({ ok: true, message: "Demande de versement créée — en attente de validation" });
 });
 
 app.post("/api/caisse/:id/cloturer", auth, async (req, res) => {
@@ -1135,6 +1139,57 @@ app.get("/api/rapports/abc", auth, need("R_RAPPORTS"), async (req, res) => {
   res.json({ rows, totalCA, nbProduits: rows.length });
 });
 
+
+/* ---------- VERSEMENTS EN ATTENTE ---------- */
+app.get("/api/versements/en-attente", auth, async (req, res) => {
+  const { rows: [param] } = await pool.query("SELECT valeur FROM parametres WHERE cle='versement_validateur'");
+  const validateur = param ? param.valeur : "admin";
+  const isValidateur = req.user.role_code === "admin" || req.user.nom === validateur || hasRight(req.user, "R_POINT");
+  const { rows } = await pool.query(
+    `SELECT vc.*, c.user_id AS caissiere_id, u.nom AS caissiere_nom, c.fonds_initial
+     FROM versements_caisse vc
+     JOIN caisses c ON c.id = vc.caisse_id
+     JOIN users u ON u.id = c.user_id
+     WHERE vc.statut = 'en_attente'
+     ORDER BY vc.date DESC`);
+  res.json({ rows, canValidate: isValidateur, validateur });
+});
+
+app.post("/api/versements/:id/valider", auth, async (req, res) => {
+  const { rows: [param] } = await pool.query("SELECT valeur FROM parametres WHERE cle='versement_validateur'");
+  const validateur = param ? param.valeur : "admin";
+  if (req.user.role_code !== "admin" && req.user.nom !== validateur && !hasRight(req.user, "R_POINT"))
+    return res.status(403).json({ error: "Vous n'êtes pas autorisé à valider les versements" });
+  const v = await tx(req.user.id, async c => {
+    const { rows: [vc] } = await c.query("SELECT * FROM versements_caisse WHERE id=$1 FOR UPDATE", [req.params.id]);
+    if (!vc) throw Object.assign(new Error("Versement introuvable"), { status: 404 });
+    if (vc.statut !== "en_attente") throw Object.assign(new Error("Ce versement est déjà traité"), { status: 400 });
+    await c.query("UPDATE versements_caisse SET statut='valide', valide_par=$1, valide_le=now() WHERE id=$2", [req.user.id, vc.id]);
+    return vc;
+  });
+  broadcast({ type: "caisse" });
+  broadcast({ type: "versement_valide" });
+  res.json({ ok: true });
+});
+
+app.post("/api/versements/:id/refuser", auth, async (req, res) => {
+  const { rows: [param] } = await pool.query("SELECT valeur FROM parametres WHERE cle='versement_validateur'");
+  const validateur = param ? param.valeur : "admin";
+  if (req.user.role_code !== "admin" && req.user.nom !== validateur && !hasRight(req.user, "R_POINT"))
+    return res.status(403).json({ error: "Vous n'êtes pas autorisé à valider les versements" });
+  const motif = String(req.body.motif || "").trim();
+  if (!motif) return res.status(400).json({ error: "Motif de refus obligatoire" });
+  const v = await tx(req.user.id, async c => {
+    const { rows: [vc] } = await c.query("SELECT * FROM versements_caisse WHERE id=$1 FOR UPDATE", [req.params.id]);
+    if (!vc) throw Object.assign(new Error("Versement introuvable"), { status: 404 });
+    if (vc.statut !== "en_attente") throw Object.assign(new Error("Ce versement est déjà traité"), { status: 400 });
+    await c.query("UPDATE versements_caisse SET statut='refuse', valide_par=$1, valide_le=now(), motif_refus=$2 WHERE id=$3", [req.user.id, motif, vc.id]);
+    return vc;
+  });
+  broadcast({ type: "caisse" });
+  broadcast({ type: "versement_refuse" });
+  res.json({ ok: true });
+});
 
 /* ---------- démarrage ---------- */
 /* ---------- Module Stock avanc� (magasins, services, bons FEFO, inventaires, r�appro) ---------- */

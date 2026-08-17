@@ -44,20 +44,17 @@
   </header>
 
   <nav id="sideNav" class="sidenav">
-    <a class="nav-link active" data-view="accueil">🏠 Tableau de bord</a>
+    <a class="nav-link active" data-view="accueil">📊 Tableau de bord</a>
     <a class="nav-link" data-view="vente" data-right="R_VENTE">🛒 Caisse</a>
-    <a class="nav-link" data-view="releve" data-right="R_VENTE">📋 Ma journée</a>
+    <a class="nav-link" data-view="releve" data-right="R_VENTE">📝 Ma journée</a>
     <a class="nav-link" data-view="produits" data-right="R_PRODUITS">📦 Catalogue</a>
-    <a class="nav-link" data-view="stock" data-right="R_STOCK">🗄️ Stocks</a>
-    <a class="nav-link" data-view="point" data-right="R_POINT">🌙 Clôture de caisse</a>
-    <a class="nav-link" data-view="users" data-right="R_USERS">👥 Personnel</a>
-    <a class="nav-link" data-view="rapports" data-right="R_RAPPORTS">📊 Bénéfices</a>
-    <a class="nav-link" data-view="journal" data-right="R_JOURNAL">🕵️ Journal d'activité</a>
-    <a class="nav-link" data-view="params" data-right="R_PARAMS">⚙️ Paramètres</a>
-    <a class="nav-link" data-view="stockmod" data-right="R_STOCK">📦 Aide stock</a>
+    <a class="nav-link" data-view="stock" data-right="R_STOCK">📋 Stocks</a>
     <a class="nav-link" data-view="dormant" data-right="R_STOCK">💤 Stock dormant</a>
+    <a class="nav-link" data-view="point" data-right="R_POINT">🔒 Clôture de caisse</a>
     <a class="nav-link" data-view="depenses" data-right="R_RAPPORTS">💸 Dépenses</a>
+    <a class="nav-link" data-view="rapports" data-right="R_RAPPORTS">📈 Bénéfices</a>
     <a class="nav-link" data-view="abc" data-right="R_RAPPORTS">📊 Analyse ABC</a>
+    <a class="nav-link" data-view="params">⚙️ Paramètres <span id="notifBadge" class="notif-badge hidden">0</span></a>
   </nav>
 
   <main id="main" class="main">
@@ -156,13 +153,7 @@
     </section>
 
     <!-- UTILISATEURS -->
-    <section id="view-users" class="view">
-      <div class="row wrap">
-        <h2 class="grow">Personnel &amp; droits</h2>
-        <button id="newUserBtn" class="btn primary">+ Nouvel utilisateur</button> <button id="roleManagerBtn" class="btn ghost">⚙️ Gérer les rôles</button>
-      </div>
-      <div id="usersWrap" class="panel"></div>
-    </section>
+    
 
     <!-- RAPPORTS -->
     <section id="view-rapports" class="view">
@@ -191,27 +182,42 @@
     </section>
 
     <!-- JOURNAL -->
-    <section id="view-journal" class="view">
-      <div class="row wrap">
-        <h2 class="grow">Journal d'activité</h2>
-        <select id="audUserFilter"><option value="">Tous les utilisateurs</option></select>
-        <input id="audSearch" placeholder="Rechercher une action…">
-        <button id="audCsvBtn" class="btn ghost">⬇️ Export CSV</button>
-      </div>
-      <div id="journalWrap" class="panel"></div>
-    </section>
+    
 
     <!-- PARAMÈTRES -->
     <section id="view-params" class="view">
-      <h2>Paramètres de la boutique</h2>
-      <div id="paramsBox" class="panel"></div>
+      <h2>⚙️ Paramètres</h2>
+      <div class="tabs" style="margin-bottom:10px">
+        <button class="tab on" data-ptab="boutique">🏪 Boutique</button>
+        <button class="tab" data-ptab="personnel">👥 Personnel</button>
+        <button class="tab" data-ptab="versements">💰 Versements <span id="notifBadgeTab" class="notif-badge-tab hidden">0</span></button>
+        <button class="tab" data-ptab="journal" data-right="R_JOURNAL">📜 Journal</button>
+        <button class="tab" data-ptab="aide" data-right="R_STOCK">📦 Aide stock</button>
+      </div>
+      <div id="ptab-boutique" class="ptab"><div id="paramsBox" class="panel"></div></div>
+      <div id="ptab-personnel" class="ptab hidden">
+        <div class="row wrap"><h2 class="grow" style="margin:0">Personnel &amp; droits</h2>
+        <button id="newUserBtn" class="btn primary">+ Nouvel utilisateur</button> <button id="roleManagerBtn" class="btn ghost">⚙️ Gérer les rôles</button></div>
+        <div id="usersWrap" class="panel"></div>
+      </div>
+      <div id="ptab-versements" class="ptab hidden">
+        <h3>💰 Demandes de versement en attente</h3>
+        <div id="versementBox" class="panel"></div>
+        <h3>⚙️ Configuration</h3>
+        <div id="versementConfigBox" class="panel"></div>
+      </div>
+      <div id="ptab-journal" class="ptab hidden">
+        <div class="row wrap"><h2 class="grow" style="margin:0">Journal d'activité</h2>
+        <select id="audUserFilter"><option value="">Tous les utilisateurs</option></select>
+        <input id="audSearch" placeholder="Rechercher une action…">
+        <button id="audCsvBtn" class="btn ghost">📄 Export CSV</button></div>
+        <div id="journalWrap" class="panel"></div>
+      </div>
+      <div id="ptab-aide" class="ptab hidden"><div id="stockmodBox" class="panel"></div></div>
     </section>
 
     <!-- PARAMETRES -->
-    <section id="view-stockmod" class="view">
-      <h2>Aide stock</h2>
-      <div id="stockmodBox" class="panel"></div>
-    </section>
+    
 
   
     <!-- STOCK DORMANT -->

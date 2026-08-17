@@ -167,7 +167,10 @@ function connectWS() {
   ws.onmessage = e => {
     try {
       const m = JSON.parse(e.data);
-      if (m && m.type && renderers[curView]) renderers[curView]().catch(() => { });
+      if (m && m.type) {
+    if (m.type === "versement_demande" || m.type === "versement_valide" || m.type === "versement_refuse" || m.type === "caisse") checkNotifVersements();
+    if (renderers[curView]) renderers[curView]().catch(() => { });
+  }
     } catch (err) { }
   };
   ws.onclose = () => { ws = null; setTimeout(connectWS, 3000); };
@@ -2316,6 +2319,75 @@ function askPrompt(titre, valeurDefaut, onOk) {
 }
 
 /* ---------- événements ---------- */
+
+/* ---------- NOTIFICATIONS VERSEMENTS ---------- */
+let notifCount = 0;
+async function checkNotifVersements() {
+  try {
+    const r = await api("/versements/en-attente");
+    notifCount = (r.rows || []).length;
+    const badge = document.getElementById("notifBadge");
+    const badgeTab = document.getElementById("notifBadgeTab");
+    if (badge) { badge.textContent = notifCount; badge.classList.toggle("hidden", notifCount === 0); }
+    if (badgeTab) { badgeTab.textContent = notifCount; badgeTab.classList.toggle("hidden", notifCount === 0); }
+  } catch (e) { /* silent */ }
+}
+function renderVersementsAttente() {
+  api("/versements/en-attente").then(r => {
+    const box = document.getElementById("versementBox");
+    if (!box) return;
+    const rows = r.rows || [];
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty">Aucune demande de versement en attente</div>';
+      return;
+    }
+    box.innerHTML = '<p class="muted" style="margin:0 0 8px">' + rows.length + ' demande(s) en attente</p>'
+      + '<div class="table-wrap"><table><tr><th>Caissière</th><th class="num">Montant</th><th>Mode</th><th>Motif</th><th>Date</th><th>Actions</th></tr>'
+      + rows.map(function(v) {
+        return '<tr><td>' + esc(v.caissiere_nom) + '</td><td class="num"><b>' + money(v.montant) + '</b></td>'
+          + '<td>' + esc(v.mode) + '</td><td>' + esc(v.motif || '') + '</td>'
+          + '<td>' + fmtDate(v.date) + '</td>'
+          + '<td><div class="actions">'
+          + '<button class="btn small success" data-vval="' + v.id + '">✓ Valider</button>'
+          + '<button class="btn small danger" data-vref="' + v.id + '">✗ Refuser</button>'
+          + '</div></td></tr>';
+      }).join('') + '</table></div>';
+    document.querySelectorAll("[data-vval]").forEach(function(b) {
+      b.addEventListener("click", async function() {
+        try { await api("/versements/" + b.dataset.vval + "/valider", { method: "POST" }); toast("Versement validé"); checkNotifVersements(); renderVersementsAttente(); }
+        catch (e) { toast(e.message); }
+      });
+    });
+    document.querySelectorAll("[data-vref]").forEach(function(b) {
+      b.addEventListener("click", function() {
+        askPrompt("Refuser le versement", "", async function(motif) {
+          if (!motif || !motif.trim()) { toast("Motif obligatoire"); return; }
+          try { await api("/versements/" + b.dataset.vref + "/refuser", { method: "POST", body: JSON.stringify({ motif: motif.trim() }) }); toast("Versement refusé"); checkNotifVersements(); renderVersementsAttente(); }
+          catch (e) { toast(e.message); }
+        });
+      });
+    });
+  }).catch(function(e) { toast(e.message); });
+}
+function renderVersementConfig() {
+  api("/parametres").then(function(rows) {
+    var p = {};
+    rows.forEach(function(r) { p[r.cle] = r.valeur; });
+    var validateur = p.versement_validateur || "admin";
+    var box = document.getElementById("versementConfigBox");
+    if (!box) return;
+    box.innerHTML = '<label class="field">Validateur des versements <select id="vcSel">'
+      + (DB.users || []).map(function(u) { return '<option value="' + esc(u.nom) + '"' + (u.nom === validateur ? ' selected' : '') + '>' + esc(u.nom) + ' (' + esc(u.role_code) + ')</option>'; }).join('')
+      + '</select></label>'
+      + '<p class="muted">L\'utilisateur sélectionné recevra les demandes de versement et pourra les valider ou les refuser. L\'admin garde toujours ce droit.</p>'
+      + '<button class="btn primary" id="vcSave">Enregistrer</button>';
+    document.getElementById("vcSave").addEventListener("click", async function() {
+      try { await api("/parametres", { method: "PUT", body: JSON.stringify({ versement_validateur: document.getElementById("vcSel").value }) }); toast("Validateur enregistré"); }
+      catch (e) { toast(e.message); }
+    });
+  }).catch(function(e) { toast(e.message); });
+}
+
 function bind() {
   $("#loginBtn").addEventListener("click", doLogin);
   $("#loginPass").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
@@ -2412,6 +2484,19 @@ document.addEventListener("keydown", function(e) {
   $("#newUserBtn").addEventListener("click", () => userForm(null));
   $("#roleManagerBtn").addEventListener("click", roleManager);
   $("#rapGenBtn").addEventListener("click", () => genRapport().catch(e => toast(e.message)));
+  // Param sub-tabs
+  document.querySelectorAll("[data-ptab]").forEach(b => b.addEventListener("click", () => {
+    document.querySelectorAll("[data-ptab]").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    document.querySelectorAll(".ptab").forEach(p => p.classList.add("hidden"));
+    const target = document.getElementById("ptab-" + b.dataset.ptab);
+    if (target) target.classList.remove("hidden");
+    if (b.dataset.ptab === "versements") { renderVersementsAttente(); renderVersementConfig(); }
+    if (b.dataset.ptab === "journal") renderers.journal().catch(() => {});
+    if (b.dataset.ptab === "personnel") renderers.users().catch(() => {});
+    if (b.dataset.ptab === "boutique") renderers.params().catch(() => {});
+    if (b.dataset.ptab === "aide") AppStock.render();
+  }));
   $("#rapPrintBtn").addEventListener("click", () => {
     imprimer("Rapport", `<h2>Rapport du ${$("#rapFrom").value} au ${$("#rapTo").value} (par ${$("#rapGroup").value})</h2>` + $("#rapportBox").innerHTML, "A4");
   });
@@ -2438,6 +2523,7 @@ document.addEventListener("keydown", function(e) {
   $("#modal").addEventListener("click", e => { if (e.target === $("#modal")) closeModal(); });
 }
 async function init() {
+  checkNotifVersements();
   try { DB.params = await api("/parametres"); } catch (e) { }
   $("#loginHint").innerHTML = `Connecté à : <b>${API_BASE}</b>` + (getParam("show_demo") === "1" ? `<br>Comptes de démonstration : <b>admin</b> / admin123 · <b>Awa Diop</b> / pc123 · <b>Fatou Ndiaye</b> / caisse123` : "");
   bind();
