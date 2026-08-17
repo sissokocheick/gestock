@@ -206,6 +206,16 @@ async function doLogin() {
     await showApp();
   } catch (e) { showLoginErr(e.message); }
 }
+function showLogin() {
+  const app = document.getElementById("app");
+  const login = document.getElementById("login");
+  if (app) app.classList.add("hidden");
+  if (login) login.classList.remove("hidden");
+  const lu = document.getElementById("loginUser");
+  if (lu) { lu.value = ""; lu.focus(); }
+  const lp = document.getElementById("loginPass");
+  if (lp) lp.value = "";
+}
 function showLoginErr(msg) { $("#loginErr").textContent = msg; $("#loginErr").classList.remove("hidden"); }
 function doLogout() {
   token = null; localStorage.removeItem("gs_token");
@@ -272,7 +282,7 @@ function go(view) {
 }
 
 /* ---------- chargement & erreur réseau ---------- */
-const VIEW_BOX = { accueil: "#dashCards", vente: "#venteGrid", releve: "#releveBox", produits: "#prodWrap", stock: "#stockWrap", point: "#pointBox", users: "#usersWrap", rapports: "#rapportBox", journal: "#journalWrap", params: "#paramsBox", stockmod: "#stockmodBox" };
+const VIEW_BOX = { accueil: "#dashCards", vente: "#venteGrid", releve: "#releveBox", produits: "#prodWrap", stock: "#stockWrap", point: "#pointBox", users: "#usersWrap", rapports: "#rapportBox", journal: "#journalWrap", params: "#paramsBox", stockmod: "#stockmodBox", dormant: "#dormantBox", depenses: "#depensesBox", abc: "#abcBox" };
 function viewLoading(view) {
   const sel = VIEW_BOX[view];
   if (sel) { const el = $(sel); if (el) el.innerHTML = `<div class="empty">⏳ Chargement…</div>`; }
@@ -2523,7 +2533,7 @@ document.addEventListener("keydown", function(e) {
   $("#audUserFilter").addEventListener("change", () => renderers.journal().catch(() => { }));
   $("#audSearch").addEventListener("input", () => renderers.journal().catch(() => { }));
   $("#abcGen").addEventListener("click", () => renderers.abc().catch(e => toast(e.message)));
-  $("#view-abc [data-abc]").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("#view-abc [data-abc]").forEach(b => b.addEventListener("click", () => {
     const k = b.dataset.abc, d = new Date();
     $("#abcTo").value = todayKey();
     if (k === "today") $("#abcFrom").value = todayKey();
