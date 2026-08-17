@@ -65,11 +65,14 @@ input:focus,select:focus{outline:2px solid var(--primary);outline-offset:-1px}
 .topbar-right{display:flex;align-items:center;gap:10px}
 .chip{background:rgba(255,255,255,.14);padding:5px 12px;border-radius:20px;font-size:13px}
 .topbar .btn.ghost{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.25);color:#fff}
+.topbar .btn{display:inline-flex;align-items:center;gap:6px}
+.topbar .btn svg{width:15px;height:15px}
 .topbar .btn.ghost:hover{filter:brightness(1.12)}
 .topbar .btn.ghost:active{transform:translateY(1px)}
 
 .sidenav{position:fixed;top:56px;bottom:0;left:0;width:210px;background:var(--panel);border-right:1px solid var(--border);padding:12px 8px;overflow-y:auto;z-index:15}
 .nav-link{display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:9px;color:var(--ink);font-weight:600;font-size:14px;cursor:pointer;margin-bottom:2px}
+.nav-link svg{width:18px;height:18px;flex:none}
 .nav-link:hover{background:var(--hover)}
 .nav-link.active{background:var(--primary);color:#fff}
 .main{margin-left:210px;padding:18px;max-width:1400px}
