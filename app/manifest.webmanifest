@@ -1,0 +1,13 @@
+{
+  "name": "Gestion Stock & Vente",
+  "short_name": "StockVente",
+  "description": "Gestion de stock, vente directe, point du soir et utilisateurs",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "lang": "fr",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

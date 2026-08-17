@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<title>Gestion Stock &amp; Vente</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ===== ÉCRAN DE CONNEXION ===== -->
+<div id="login" class="login-screen">
+  <div class="login-card">
+    <div class="login-logo" id="loginLogo">🏪</div>
+    <h1 id="loginTitle">Gestion Stock &amp; Vente</h1>
+    <p class="muted" id="loginSub">Connectez-vous pour continuer</p>
+    <label class="field">Nom d'utilisateur
+      <input id="loginUser" autocomplete="username" placeholder="ex. admin">
+    </label>
+    <label class="field">Mot de passe
+      <input id="loginPass" type="password" autocomplete="current-password" placeholder="••••••••">
+    </label>
+    <button id="loginBtn" class="btn primary block">Se connecter</button>
+    <p id="loginErr" class="error hidden"></p>
+    <p class="hint" id="loginHint"></p>
+  </div>
+</div>
+
+<!-- ===== APPLICATION ===== -->
+<div id="app" class="app hidden">
+  <header class="topbar">
+    <div class="brand">
+      <img id="brandLogo" class="brand-logo hidden" alt="Logo">
+      <span id="brandName">Boutique</span>
+    </div>
+    <div class="topbar-right">
+      <span id="curUser" class="chip"></span>
+      <button id="refreshBtn" class="btn ghost small" title="Actualiser la page">⟳ Actualiser</button>
+      <button id="logoutBtn" class="btn ghost small" title="Se déconnecter / changer d'utilisateur">🔄 Changer</button>
+    </div>
+  </header>
+
+  <nav id="sideNav" class="sidenav">
+    <a class="nav-link active" data-view="accueil">🏠 Tableau de bord</a>
+    <a class="nav-link" data-view="vente" data-right="R_VENTE">🛒 Caisse</a>
+    <a class="nav-link" data-view="releve" data-right="R_VENTE">📋 Ma journée</a>
+    <a class="nav-link" data-view="produits" data-right="R_PRODUITS">📦 Catalogue</a>
+    <a class="nav-link" data-view="stock" data-right="R_STOCK">🗄️ Stocks</a>
+    <a class="nav-link" data-view="point" data-right="R_POINT">🌙 Clôture de caisse</a>
+    <a class="nav-link" data-view="users" data-right="R_USERS">👥 Personnel</a>
+    <a class="nav-link" data-view="rapports" data-right="R_RAPPORTS">📊 Bénéfices</a>
+    <a class="nav-link" data-view="journal" data-right="R_JOURNAL">🕵️ Journal d'activité</a>
+    <a class="nav-link" data-view="params" data-right="R_PARAMS">⚙️ Paramètres</a>
+    <a class="nav-link" data-view="stockmod" data-right="R_STOCK">💡 Aide stock</a>
+  </nav>
+
+  <main id="main" class="main">
+
+    <!-- ACCUEIL -->
+    <section id="view-accueil" class="view">
+      <h2>Tableau de bord</h2>
+      <div id="dashCards" class="cards"></div>
+      <h3>Alertes stock</h3>
+      <div id="dashAlerts" class="panel"></div>
+      <h3>Top produits du jour</h3>
+      <div id="dashTop" class="panel"></div>
+      <h3>Activité des 7 derniers jours</h3>
+      <div id="dashChart" class="panel"></div>
+    </section>
+
+    <!-- VENTE -->
+    <section id="view-vente" class="view">
+      <h2>Caisse — vente directe</h2>
+      <div id="caisseBar"></div>
+      <div class="vente-layout">
+        <div class="vente-left">
+          <div class="row">
+            <input id="venteSearch" class="grow" placeholder="🔎 Rechercher (nom, code-barres…) ou scanner">
+            <button id="scanBtn" class="btn primary">📷 Scanner</button>
+          </div>
+          <div class="row" style="margin-top:6px">
+            <select id="venteFamille"><option value="">Toutes les familles</option></select>
+            <select id="venteSort">
+              <option value="nom">Tri : nom</option>
+              <option value="prix">Tri : prix croissant</option>
+              <option value="prixDesc">Tri : prix décroissant</option>
+            </select>
+          </div>
+          <div id="venteGrid" class="prod-grid"></div>
+        </div>
+        <aside class="cart panel">
+          <h3>Panier</h3>
+          <div id="cartLines"></div>
+          <div class="cart-total">
+            <span>Total</span><b id="cartTotal">0 F</b>
+            <span>Remise (F)</span><input id="cartRemise" type="number" min="0" value="0">
+            <p class="muted" id="cartRemiseHint" style="font-size:12px;margin:0"></p>
+            <span id="cartBenefLabel">Bénéfice</span><b id="cartBenef">0 F</b>
+          </div>
+          <label class="field">Paiement
+            <select id="cartMode">
+              <option value="especes">Espèces</option>
+              <option value="mobile">Mobile money</option>
+              <option value="carte">Carte</option>
+            </select>
+          </label>
+          <label class="field" id="recuWrap">Montant reçu (F)
+            <input id="cartRecu" type="number" min="0" value="0">
+          </label>
+          <p class="muted" id="cartRendu"></p>
+          <button id="encaisserBtn" class="btn success block">💵 Encaisser</button>
+        </aside>
+      </div>
+    </section>
+
+    <!-- MON RELEVÉ -->
+    <section id="view-releve" class="view">
+      <h2>Ma journée — mon relevé</h2>
+      <div id="releveBox" class="panel"></div>
+    </section>
+
+    <!-- PRODUITS -->
+    <section id="view-produits" class="view">
+      <div class="tabs" style="margin-bottom:10px">
+        <button class="tab on" id="catTabP">📦 Produits</button>
+        <button class="tab" id="catTabF">🏷️ Familles</button>
+      </div>
+      <div id="catPaneP">
+        <div class="row wrap">
+          <h2 class="grow">Catalogue produits</h2>
+          <select id="prodFamilleFilter"><option value="">Toutes les familles</option></select>
+          <input id="prodSearch" placeholder="Rechercher."> <label class="field" style="display:flex;align-items:center;gap:6px;margin:0;white-space:nowrap"><input type="checkbox" id="prodMasqInactifs" style="width:auto" checked> Masquer inactifs</label>
+          <button id="newProdBtn" class="btn primary">+ Nouveau produit</button>
+        </div>
+        <div id="prodWrap" class="panel"></div>
+      </div>
+      <div id="catPaneF" class="panel" style="display:none"></div>
+    </section>
+
+    <!-- STOCK -->
+    <section id="view-stock" class="view">
+      <h2>Gestion du stock</h2>
+      <div id="stockWrap" class="panel"></div>
+    </section>
+
+    <!-- POINT DU SOIR -->
+    <section id="view-point" class="view">
+      <h2>Clôture de caisse du soir</h2>
+      <div id="pointBox"></div>
+    </section>
+
+    <!-- UTILISATEURS -->
+    <section id="view-users" class="view">
+      <div class="row wrap">
+        <h2 class="grow">Personnel &amp; droits</h2>
+        <button id="newUserBtn" class="btn primary">+ Nouvel utilisateur</button> <button id="roleManagerBtn" class="btn ghost">⚙️ Gérer les rôles</button>
+      </div>
+      <div id="usersWrap" class="panel"></div>
+    </section>
+
+    <!-- RAPPORTS -->
+    <section id="view-rapports" class="view">
+      <h2>Rapports &amp; bénéfices</h2>
+      <div class="row wrap">
+        <label class="field">Du <input id="rapFrom" type="date"></label>
+        <label class="field">Au <input id="rapTo" type="date"></label>
+        <label class="field">Classer par
+          <select id="rapGroup">
+            <option value="caissiere">Caissière</option>
+            <option value="famille">Famille</option>
+            <option value="article">Article</option>
+          </select>
+        </label>
+        <button id="rapGenBtn" class="btn primary">Générer</button>
+        <button id="rapPrintBtn" class="btn ghost">🖨️ Imprimer</button>
+      </div>
+      <div class="chips" style="margin-top:6px">
+        <button class="chip-btn" data-per="today">Aujourd'hui</button>
+        <button class="chip-btn" data-per="yesterday">Hier</button>
+        <button class="chip-btn" data-per="7j">7 derniers jours</button>
+        <button class="chip-btn" data-per="month">Ce mois</button>
+      </div>
+      <div id="rapportBox" class="panel"></div>
+    </section>
+
+    <!-- JOURNAL -->
+    <section id="view-journal" class="view">
+      <div class="row wrap">
+        <h2 class="grow">Journal d'activité</h2>
+        <select id="audUserFilter"><option value="">Tous les utilisateurs</option></select>
+        <input id="audSearch" placeholder="Rechercher une action…">
+        <button id="audCsvBtn" class="btn ghost">⬇️ Export CSV</button>
+      </div>
+      <div id="journalWrap" class="panel"></div>
+    </section>
+
+    <!-- PARAMÈTRES -->
+    <section id="view-params" class="view">
+      <h2>Paramètres de la boutique</h2>
+      <div id="paramsBox" class="panel"></div>
+    </section>
+
+    <!-- PARAMETRES -->
+    <section id="view-stockmod" class="view">
+      <h2>Aide stock</h2>
+      <div id="stockmodBox" class="panel"></div>
+    </section>
+
+  </main>
+</div>
+
+<div id="modal" class="modal hidden"><div class="modal-card" id="modalCard"></div></div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="js/JsBarcode.min.js"></script>
+<script src="js/html5-qrcode.min.js"></script>
+<script src="app.js"></script>
+<script src="app-stock.js"></script>
+</body>
+</html>
