@@ -235,7 +235,11 @@ async function showApp() {
   } catch (e) { toast(e.message); }
   // Re-affiche le nom avec le libellé du rôle (chargé juste au-dessus)
   $("#curUser").textContent = `${cur.nom} - ${roleLabel(cur.role)}`;
-  applyBrand(); buildNav(); go(hasRight("R_RAPPORTS") ? "accueil" : "vente"); connectWS();
+  applyBrand(); buildNav();
+  let target = null;
+  try { target = localStorage.getItem("gs_curView"); } catch (e) {}
+  if (!target || !renderers[target]) target = hasRight("R_RAPPORTS") ? "accueil" : "vente";
+  go(target); connectWS();
 }
 function roleLabel(code) {
   const r = DB.roles.find(x => x.code === code);
@@ -421,7 +425,8 @@ function versementForm(c) {
   });
 }
 function clotureForm(c) {
-  const rows = (c.versements || []).map(v => `<tr><td>${fmtDate(v.date)}</td><td class="num">${money(v.montant)}</td><td>${esc(modeLabel(v.mode))}</td><td>${esc(v.motif || "-")}</td></tr>`).join("");
+  const vStat = s => s === "valide" ? '<span class="badge ok">Validé</span>' : s === "refuse" ? '<span class="badge bad">Refusé</span>' : '<span class="badge warn">En attente</span>';
+  const rows = (c.versements || []).map(v => `<tr><td>${fmtDate(v.date)}</td><td class="num">${money(v.montant)}</td><td>${esc(modeLabel(v.mode))}</td><td>${esc(v.motif || "-")}</td><td>${vStat(v.statut)}</td></tr>`).join("");
   openModal(`<h3>Cloturer votre caisse</h3>
     <div class="cards" style="margin:8px 0">
       <div class="card"><div class="k">Fonds de depart</div><div class="v">${money(c.fonds_initial)}</div></div>
@@ -429,7 +434,8 @@ function clotureForm(c) {
       <div class="card"><div class="k">Verse (especes)</div><div class="v">${money(c.verse_especes)}</div></div>
       <div class="card"><div class="k">Total ventes</div><div class="v">${money(c.total)}</div></div>
     </div>
-    <div class="table-wrap"><table><tr><th>Date</th><th class="num">Montant</th><th>Mode</th><th>Motif</th></tr>${rows || `<tr><td colspan="4" class="empty">Aucun versement</td></tr>`}</table></div>
+    <div class="table-wrap"><table><tr><th>Date</th><th class="num">Montant</th><th>Mode</th><th>Motif</th><th>Statut</th></tr>${rows || `<tr><td colspan="5" class="empty">Aucun versement</td></tr>`}</table></div>
+    ${Number(c.verse_en_attente) > 0 ? `<p class="error" style="margin-top:8px">⚠️ ${money(c.verse_en_attente)} de versement(s) en attente de validation - cet argent est encore dans le tiroir.</p>` : ""}
     <p class="muted" style="margin-top:8px">Comptez votre tiroir (especes) et saisissez le montant trouve.</p>
     <label class="field">Argent compte dans le tiroir (F) <input id="ctCompte" type="number" min="0" value="${c.attendu_especes}"></label>
     <label class="field">Notes <input id="ctNotes" placeholder="ex. ecart explique..."></label>
@@ -1683,7 +1689,7 @@ async function renderPointClass() {
 /* ---------- utilisateurs ---------- */
 renderers.users = async function () {
   let users = [];
-  try { users = await api("/users"); } catch (e) { toast(e.message); return; }
+  try { users = await api("/users"); DB.users = users; } catch (e) { toast(e.message); return; }
   $("#usersWrap").innerHTML = (users.length > 0 ? pgBar("users", users.length, "utilisateur(s)") : "") + `
     <div class="table-wrap"><table>
     <tr><th>Nom</th><th>Rôle</th><th>Droits</th><th>Statut</th><th>Dernière connexion</th><th>Actions</th></tr>
@@ -2300,7 +2306,6 @@ function toast(msg) {
 let confirmCb = null;
 function askConfirm(titre, message, onOk, opts) {
   opts = opts || {};
-  opts = opts || {};
   confirmCb = onOk;
   openModal(`<div class="confirm-box">
     <div class="confirm-ic">${opts.icone || (opts.danger ? "⚠️" : "❓")}</div>
@@ -2311,20 +2316,21 @@ function askConfirm(titre, message, onOk, opts) {
       <button class="btn ${opts.danger ? "danger" : "primary"} grow" id="cfOk">${esc(opts.okLabel || "Confirmer")}</button>
     </div>
   </div>`);
-  $("#cfNo").addEventListener("click", () => { closeModal(); confirmCb = null; });
-  $("#cfOk").addEventListener("click", () => { closeModal(); const cb = confirmCb; confirmCb = null; if (cb) cb(); });
-  // Enter = confirm, Escape = cancel
-  document.addEventListener("keydown", function cfKey(e) {
-    if (e.key === "Enter" && !document.querySelector("#modal").classList.contains("hidden")) {
-      e.preventDefault(); document.removeEventListener("keydown", cfKey);
-      closeModal(); const cb = confirmCb; confirmCb = null; if (cb) cb();
-    } else if (e.key === "Escape" && !document.querySelector("#modal").classList.contains("hidden")) {
-      e.preventDefault(); document.removeEventListener("keydown", cfKey);
-      closeModal(); confirmCb = null;
-    }
-  });
-}
-function askPrompt(titre, valeurDefaut, onOk) {
+  let done = false;
+  const finish = ok => {
+    if (done) return; done = true;
+    document.removeEventListener("keydown", cfKey);
+    closeModal(); const cb = confirmCb; confirmCb = null;
+    if (ok && cb) cb();
+  };
+  function cfKey(e) {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  }
+  $("#cfNo").addEventListener("click", () => finish(false));
+  $("#cfOk").addEventListener("click", () => finish(true));
+  document.addEventListener("keydown", cfKey);
+}function askPrompt(titre, valeurDefaut, onOk) {
   openModal(`<div class="confirm-box">
     <div class="confirm-ic">✏️</div>
     <h3>${esc(titre)}</h3>
@@ -2335,11 +2341,12 @@ function askPrompt(titre, valeurDefaut, onOk) {
     </div>
   </div>`);
   const inp = $("#apInput"); inp.focus(); inp.select();
-  const fin = ok => { closeModal(); if (ok && onOk) onOk(inp.value); };
+    let done = false;
+  const fin = ok => { if (done) return; done = true; closeModal(); if (ok && onOk) onOk(inp.value); };
   $("#apNo").addEventListener("click", () => fin(false));
   $("#apOk").addEventListener("click", () => fin(true));
-  inp.addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); fin(true); } });
-  inp.addEventListener("keydown", e => { if (e.key === "Enter") fin(true); });
+  inp.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); fin(true); } });
+  inp.addEventListener("keydown", e => { if (e.key === "Escape") { e.preventDefault(); fin(false); } });
 }
 
 /* ---------- événements ---------- */
@@ -2394,6 +2401,8 @@ function renderVersementsAttente() {
   }).catch(function(e) { toast(e.message); });
 }
 function renderVersementConfig() {
+  const loadUsers = !DB.users || !DB.users.length ? api("/users").then(function(u) { DB.users = u; }).catch(function() {}) : Promise.resolve();
+  loadUsers.then(function() {
   api("/parametres").then(function(rows) {
     var p = {};
     rows.forEach(function(r) { p[r.cle] = r.valeur; });
@@ -2410,6 +2419,7 @@ function renderVersementConfig() {
       catch (e) { toast(e.message); }
     });
   }).catch(function(e) { toast(e.message); });
+  });
 }
 
 function bind() {
@@ -2551,20 +2561,13 @@ document.addEventListener("keydown", function(e) {
 }
 async function init() {
   checkNotifVersements();
-  // Restore session if token exists
-  if (token) {
-    await restoreSession();
-  }
   try { DB.params = await api("/parametres"); } catch (e) { }
   $("#loginHint").innerHTML = `Connecté à : <b>${API_BASE}</b>` + (getParam("show_demo") === "1" ? `<br>Comptes de démonstration : <b>admin</b> / admin123 · <b>Awa Diop</b> / pc123 · <b>Fatou Ndiaye</b> / caisse123` : "");
   bind();
   if (token) {
-    try {
-      const me = await api("/auth/me");
-      cur = me;
-      await showApp();
-      return;
-    } catch (e) { doLogout(); }
+    // restoreSession valide le token et appelle showApp() si valide
+    await restoreSession();
+    return;
   }
   $("#login").classList.remove("hidden");
 }

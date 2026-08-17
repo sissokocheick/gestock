@@ -920,15 +920,15 @@ async function caisseAggregate(id) {
      FROM ventes v LEFT JOIN modes_paiement mp ON mp.code = v.mode
      WHERE v.caisse_id=$1 GROUP BY v.mode, mp.nom ORDER BY COALESCE(SUM(v.net),0) DESC`, [id]);
   const { rows: versements } = await pool.query(
-    "SELECT id, date, montant, mode, motif, user_id FROM versements_caisse WHERE caisse_id=$1 ORDER BY id", [id]);
+    "SELECT id, date, montant, mode, motif, statut, user_id FROM versements_caisse WHERE caisse_id=$1 ORDER BY id", [id]);
   const { rows: [vs] } = await pool.query(
     `SELECT COALESCE(SUM(vc.montant),0) AS esp FROM versements_caisse vc
-     JOIN modes_paiement mp ON mp.code = vc.mode AND mp.especes WHERE vc.caisse_id=$1`, [id]);
+     JOIN modes_paiement mp ON mp.code = vc.mode AND mp.especes WHERE vc.caisse_id=$1 AND vc.statut='valide'`, [id]);
   const verseEsp = Number(vs.esp);
   const { rows: [pending] } = await pool.query(
     "SELECT COALESCE(SUM(vc.montant),0) AS p FROM versements_caisse vc WHERE vc.caisse_id=$1 AND vc.statut='en_attente'", [id]);
   const verseEnAttente = Number(pending.p);
-  const verseTot = versements.reduce((s, v) => s + Number(v.montant), 0);
+  const verseTot = versements.filter(v => v.statut === "valide").reduce((s, v) => s + Number(v.montant), 0);
   const attendu = Number(c.fonds_initial) + Number(t.especes) - verseEsp;
   return { ...c, especes: Number(t.especes), autres: Number(t.autres), total: Number(t.total), tickets: t.tickets,
            parMode, versements, verse_especes: verseEsp, verse_total: verseTot, verse_en_attente: verseEnAttente, attendu_especes: attendu };
