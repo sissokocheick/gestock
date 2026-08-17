@@ -191,7 +191,8 @@ app.post("/api/familles", auth, need("R_PRODUITS"), async (req, res) => {
   if (!nom) return res.status(400).json({ error: "Nom obligatoire" });
   const gereLot = req.body.gere_par_lot === true;
   try {
-    const { rows: [f] } = await tx(req.user.id, c => c.query("INSERT INTO familles(nom, gere_par_lot) VALUES($1,$2) RETURNING *", [nom, gereLot]));
+    const { rows: [codeRow] } = await pool.query("SELECT 'FAM-' || lpad(nextval('familles_id_seq')::text, 4, '0') AS code");
+    const { rows: [f] } = await tx(req.user.id, c => c.query("INSERT INTO familles(nom, gere_par_lot, code) VALUES($1,$2,$3) RETURNING *", [nom, gereLot, codeRow.code]));
     broadcast({ type: "produits" });
     res.json(f);
   } catch (e) {
@@ -240,11 +241,12 @@ app.post("/api/produits", auth, need("R_PRODUITS"), async (req, res) => {
       if (rows.length) { famId = rows[0].id; if (rows[0].gere_par_lot) gereLot = true; }
       else famId = (await c.query("INSERT INTO familles(nom) VALUES($1) RETURNING id", [p.famille])).rows[0].id;
     }
+    const { rows: [refRow] } = await c.query("SELECT 'PRD-' || lpad(nextval('produits_id_seq')::text, 6, '0') AS ref");
     const { rows } = await c.query(
-      `INSERT INTO produits(nom, famille_id, code, photo, prix_achat, prix_vente, stock, stock_min, actif, gere_par_lot)
+      `INSERT INTO produits(nom, famille_id, code, photo, prix_achat, prix_vente, stock, stock_min, actif, gere_par_lot, reference)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
       [p.nom.trim(), famId, p.code || null, p.photo || null, Number(p.prix_achat) || 0, Number(p.prix_vente) || 0,
-       Number(p.stock) || 0, Number(p.stock_min) || 0, p.actif !== false, gereLot]);
+       Number(p.stock) || 0, Number(p.stock_min) || 0, p.actif !== false, gereLot, refRow.ref]);
     const id = rows[0].id;
     if (Number(p.stock) > 0)
       await c.query("INSERT INTO mouvements(type, produit_id, qte, motif, user_id) VALUES($1,$2,$3,$4,$5)",

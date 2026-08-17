@@ -9,9 +9,9 @@ const API = API_BASE + "/api";
 const WS_URL = API_BASE.replace(/^http/, "ws") + "/ws";
 
 const $ = s => document.querySelector(s);
-const $$ = s => [...document.querySelectorAll(s)];
+const $$ = s => { try { return [...document.querySelectorAll(s)]; } catch(e) { return []; } };
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const money = n => `${Number(n || 0).toLocaleString("fr-FR")} ${(DB.boutique && DB.boutique.devise) || "F"}`;
+const money = n => Number(n || 0).toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + " " + ((DB.boutique && DB.boutique.devise) || "F");
 const fmtDate = iso => new Date(iso).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 const fmtDateOnly = iso => { if (!iso) return "-"; const s = String(iso).slice(0, 10); const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? m[3] + "/" + m[2] + "/" + m[1] : s; };
 const todayKey = (d) => { const x = d || new Date(); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); };
@@ -41,6 +41,23 @@ const droitLabel = code => { const d = (DB.droits || []).find(x => x.code === co
 
 /* ---------- couche API + mode hors-ligne ---------- */
 let token = localStorage.getItem("gs_token") || null;
+// Auto-restore session on page load
+if (token) {
+  // Will be validated in init()
+}
+async function restoreSession() {
+  if (!token) { showLogin(); return; }
+  try {
+    const me = await api("/auth/me");
+    cur = me;
+    await showApp();
+  } catch (e) {
+    // Token expired — clear and show login
+    localStorage.removeItem("gs_token");
+    token = null;
+    showLogin();
+  }
+}
 let cur = null;
 let DB = { boutique: { devise: "F" }, produits: [], familles: [], roles: [], recap: [], modes: [], caisses: [], droits: [], params: [], typesMv: [], lots: [], fournisseurs: [], commandes: [] };
 let cart = [], camStream = null, scanTimer = null, curView = "accueil", ws = null, usbPrinter = null;
@@ -362,8 +379,7 @@ function renderCaisseBar() {
         <b style="color:var(--ok)">🟢 Caisse ouverte</b> depuis ${new Date(c.ouverte_le).toLocaleTimeString("fr-FR")}
         · Fonds : ${money(c.fonds_initial)}
         · Ventes : ${money(c.total)} (${c.tickets} ticket${c.tickets > 1 ? "s" : ""})
-        · Espèces attendues au tiroir : <b>${money(c.attendu_especes)}</b>
-        · Versé : ${money(c.verse_total)}
+        · 
       </div>
       <div class="row">
         <button class="btn small" id="caisseVersBtn">➕ Versement</button>
@@ -402,10 +418,7 @@ function clotureForm(c) {
       <div class="card"><div class="k">Fonds de départ</div><div class="v">${money(c.fonds_initial)}</div></div>
       <div class="card"><div class="k">Ventes espèces</div><div class="v">${money(c.especes)}</div></div>
       <div class="card"><div class="k">Versé (espèces)</div><div class="v">${money(c.verse_especes)}</div></div>
-      <div class="card"><div class="k">Espèces attendues au tiroir</div><div class="v warn">${money(c.attendu_especes)}</div></div>
-    </div>
-    <div class="table-wrap"><table><tr><th>Mode</th><th class="num">Montant</th><th class="num">Tickets</th></tr>
-      ${(c.parMode || []).map(m => `<tr><td>${esc(m.nom)}</td><td class="num">${money(m.total)}</td><td class="num">${m.tickets}</td></tr>`).join("") || `<tr><td colspan="3" class="empty">Aucune vente</td></tr>`}
+      <div class="card"><div class="k">Versé (espèces)</div><div class="v">${money(m.total)}</div></div>
       <tr style="font-weight:800"><td>Total des ventes</td><td class="num">${money(c.total)}</td><td class="num">${c.tickets}</td></tr>
     </table></div>
     ${rows ? `<h4 style="margin-top:10px">Versements effectués</h4><div class="table-wrap"><table><tr><th>Date</th><th class="num">Montant</th><th>Mode</th><th>Motif</th></tr>${rows}</table></div>` : ""}
@@ -729,7 +742,7 @@ renderers.releve = async function () {
       <div class="card"><div class="k">Mes ventes</div><div class="v">${money(ca)}</div></div>
       ${modeCards}
       <div class="card"><div class="k">Tickets</div><div class="v">${vts.length}</div></div>
-      ${caisse ? `<div class="card"><div class="k">Ma caisse - ouverte depuis ${new Date(caisse.ouverte_le).toLocaleTimeString("fr-FR")}</div><div class="v" style="font-size:14px">Fonds ${money(caisse.fonds_initial)} · Versé ${money(caisse.verse_total)} · Espèces attendues au tiroir : <b>${money(caisse.attendu_especes)}</b></div></div>` : `<div class="card"><div class="k">Ma caisse</div><div class="v" style="font-size:14px">Aucune caisse ouverte - ouvrez-la dans l'onglet Caisse</div></div>`}
+      ${caisse ? `<div class="card"><div class="k">Ma caisse - ouverte depuis ${new Date(caisse.ouverte_le).toLocaleTimeString("fr-FR")}</div><div class="v" style="font-size:14px">Fonds ${money(caisse.fonds_initial)} · Versé ${money(caisse.verse_total)} · </b></div></div>` : `<div class="card"><div class="k">Ma caisse</div><div class="v" style="font-size:14px">Aucune caisse ouverte - ouvrez-la dans l'onglet Caisse</div></div>`}
     </div>
     ${vts.length > 0 ? pgBar("releve", vts.length, "ticket(s)") : ""}
     <div class="table-wrap"><table><tr><th>Ticket</th><th>Heure</th><th>Articles</th><th>Total</th><th>Paiement</th></tr>` +
@@ -759,7 +772,7 @@ renderers.produits = async function () {
       <tr><th>Photo</th><th>Produit</th><th>Famille</th><th>Code-barres</th><th class="num">Prix achat</th><th class="num">Prix vente</th><th class="num">Bénéfice</th><th class="num">Stock</th><th class="sticky-r">Actions</th></tr>
       ${pgSlice("produits", shown).part.map(p => `<tr>
         <td>${p.photo ? `<img src="${p.photo}" style="width:36px;height:36px;object-fit:cover;border-radius:6px">` : "-"}</td>
-        <td>${esc(p.nom)} ${p.gere_par_lot ? `<span class="badge info" style="font-size:10px">📦 Lot</span>` : ""} ${p.actif ? "" : `<span class="badge off">inactif</span>`}</td>
+        <td>${esc(p.nom)} ${p.reference ? `<span class="muted" style="font-size:11px;font-family:monospace">${esc(p.reference)}</span>` : ""} ${p.gere_par_lot ? `<span class="badge info" style="font-size:10px">📦 Lot</span>` : ""} ${p.actif ? "" : `<span class="badge off">inactif</span>`}</td>
         <td>${esc(p.famille || "")}</td>
         <td>${esc(p.code || "-")}</td>
         <td class="num">${money(p.prix_achat)}</td>
@@ -1130,8 +1143,8 @@ function bonForm(type) {
     row.innerHTML = `<div class="bf-i-head"><div class="bf-i-nom">${esc(p.nom)}</div><span class="bf-i-stock">Stock : ${p.stock}</span><button class="btn small danger bf-del" title="Retirer cet article">✕</button></div>
       <div class="bf-i-body">
         <label class="bf-i-q">Quantité <input type="number" min="1"${entree ? "" : ` max="${p.stock}"`} value="1" class="bfq"></label>
-        ${entree ? `<label class="bf-i-l bf-lot-wrap" style="${p.gere_par_lot ? "" : "display:none"}">N° de lot ${p.gere_par_lot ? "*" : "(opt.)"} <input type="text" class="bflot" placeholder="ex. L2024-001"></label>
-        <label class="bf-i-p bf-per-wrap" style="${p.gere_par_lot ? "" : "display:none"}">Péremption ${p.gere_par_lot ? "*" : "(opt.)"} <input type="date" class="bfper"></label>` : `<label class="bf-i-l">Lot à sortir
+        ${entree ? `<label class="bf-i-l">N° de lot * <input type="text" class="bflot" placeholder="ex. L2024-001"></label>
+        <label class="bf-i-p">Péremption * <input type="date" class="bfper"></label>` : `<label class="bf-i-l">Lot à sortir
           <select class="bflotsel"><option value="">🔄 Auto (plus ancien)</option>${(DB.lots || []).filter(l => Number(l.produit_id) === Number(p.id) && Number(l.qte_restante) > 0).map(l => `<option value="${l.id}">${esc(l.numero || "Lot #" + l.id)} — ${fmtDateOnly(l.date_peremption)} (${fmt(l.qte_restante)})</option>`).join("")}</select>
         </label>`}
       </div>`;
@@ -1165,8 +1178,8 @@ function bonForm(type) {
     if (items.some(it => !it.produitId || it.qte <= 0)) { toast("Vérifiez les quantités des lignes"); return; }
     if (!entree && items.some(it => it.qte > (produitById(it.produitId) ? Number(produitById(it.produitId).stock) : 0))) { toast("Quantité supérieure au stock disponible"); return; }
     if (entree && !$("bfFour").value) { toast("Sélectionnez le fournisseur"); return; }
-    if (entree && items.some(it => { const p = produitById(it.produitId); return p && p.gere_par_lot && (!it.numeroLot || !it.numeroLot.trim()); })) { toast("Numéro de lot obligatoire pour les produits gérés par lot"); return; }
-    if (entree && items.some(it => { const p = produitById(it.produitId); return p && p.gere_par_lot && !it.datePeremption; })) { toast("Date de péremption obligatoire pour les produits gérés par lot"); return; }
+    if (entree && items.some(it => !it.numeroLot)) { toast("Indiquez le numéro de lot sur chaque ligne"); return; }
+    if (entree && items.some(it => !it.datePeremption)) { toast("Indiquez la date de péremption sur chaque ligne"); return; }
     const motif = $("bfMotif").value.trim();
     if (!motif) { toast("Le motif est obligatoire"); return; }
     const body = { type, lignes: items, motif };
@@ -1854,7 +1867,7 @@ renderers.depenses = async function () {
       } catch (e) { toast(e.message); }
     });
   });
-  $("#depensesBox [data-deldep]").forEach(function(b) { b.addEventListener("click", function() {
+  document.querySelectorAll("#depensesBox [data-deldep]").forEach(function(b) { b.addEventListener("click", function() {
     askConfirm("Supprimer la depense", "Confirmer la suppression ?", async function() {
       try { await api("/depenses/" + b.dataset.deldep, { method: "DELETE" }); toast("Depense supprimee"); renderers.depenses().catch(function(){}); }
       catch (e) { toast(e.message); }
@@ -1915,7 +1928,7 @@ async function genRapport() {
         pgSlice("rapport", rows).part.map(x => `<tr><td>${esc(x.key)}</td><td class="num">${x.qte}</td><td class="num">${money(x.ca)}</td><td class="num">${money(x.ben)}</td><td class="num">${Number(x.ca) > 0 ? Math.round(Number(x.ben) / Number(x.ca) * 100) : 0} %</td></tr>`).join("")}
     </table></div>`;
   const top = [...rows].sort((a, b) => Number(b.ben) - Number(a.ben)).slice(0, 5);
-  $("#rapportBox").insertAdjacentHTML("beforeend", `<h3>Top des plus rentables</h3>` +
+  $("#rapportBox").insertAdjacentHTML("beforeend", `<h3>Top produits rentables</h3>` +
     (top.length === 0 ? `<div class="empty">-</div>` : `<div class="table-wrap"><table><tr><th>${group === "article" ? "Article" : "Groupe"}</th><th class="num">Bénéfice</th></tr>` + top.map(x => `<tr><td>${esc(x.key)}</td><td class="num">${money(x.ben)}</td></tr>`).join("") + `</table></div>`, "80mm"));
 }
 
@@ -2288,6 +2301,7 @@ function toast(msg) {
 let confirmCb = null;
 function askConfirm(titre, message, onOk, opts) {
   opts = opts || {};
+  opts = opts || {};
   confirmCb = onOk;
   openModal(`<div class="confirm-box">
     <div class="confirm-ic">${opts.icone || (opts.danger ? "⚠️" : "❓")}</div>
@@ -2300,6 +2314,16 @@ function askConfirm(titre, message, onOk, opts) {
   </div>`);
   $("#cfNo").addEventListener("click", () => { closeModal(); confirmCb = null; });
   $("#cfOk").addEventListener("click", () => { closeModal(); const cb = confirmCb; confirmCb = null; if (cb) cb(); });
+  // Enter = confirm, Escape = cancel
+  document.addEventListener("keydown", function cfKey(e) {
+    if (e.key === "Enter" && !document.querySelector("#modal").classList.contains("hidden")) {
+      e.preventDefault(); document.removeEventListener("keydown", cfKey);
+      closeModal(); const cb = confirmCb; confirmCb = null; if (cb) cb();
+    } else if (e.key === "Escape" && !document.querySelector("#modal").classList.contains("hidden")) {
+      e.preventDefault(); document.removeEventListener("keydown", cfKey);
+      closeModal(); confirmCb = null;
+    }
+  });
 }
 function askPrompt(titre, valeurDefaut, onOk) {
   openModal(`<div class="confirm-box">
@@ -2315,6 +2339,7 @@ function askPrompt(titre, valeurDefaut, onOk) {
   const fin = ok => { closeModal(); if (ok && onOk) onOk(inp.value); };
   $("#apNo").addEventListener("click", () => fin(false));
   $("#apOk").addEventListener("click", () => fin(true));
+  inp.addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); fin(true); } });
   inp.addEventListener("keydown", e => { if (e.key === "Enter") fin(true); });
 }
 
@@ -2405,6 +2430,7 @@ function bind() {
   $("#cartRemise").addEventListener("input", renderCart);
   $("#cartMode").addEventListener("change", renderCart);
   $("#cartRecu").addEventListener("input", renderCart);
+  if ($("#cartRecu")) $("#cartRecu").addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); encaisser(); } });
   $("#venteSearch").addEventListener("input", e => { venteFilter = e.target.value; renderVenteGrid(); });
   $("#venteSearch").addEventListener("keydown", e => { if (e.key === "Enter" && venteFilter) { if (addByCode(venteFilter)) $("#venteSearch").value = ""; } });
   $("#venteFamille").addEventListener("change", renderVenteGrid);
@@ -2524,6 +2550,10 @@ document.addEventListener("keydown", function(e) {
 }
 async function init() {
   checkNotifVersements();
+  // Restore session if token exists
+  if (token) {
+    await restoreSession();
+  }
   try { DB.params = await api("/parametres"); } catch (e) { }
   $("#loginHint").innerHTML = `Connecté à : <b>${API_BASE}</b>` + (getParam("show_demo") === "1" ? `<br>Comptes de démonstration : <b>admin</b> / admin123 · <b>Awa Diop</b> / pc123 · <b>Fatou Ndiaye</b> / caisse123` : "");
   bind();
