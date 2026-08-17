@@ -1788,6 +1788,104 @@ async function roleForm() {
   });
 }
 
+/* ---------- STOCK DORMANT ---------- */
+let dormantJours = 30;
+renderers.dormant = async function () {
+  try {
+    const rows = await api("/stock/dormant?jours=" + dormantJours);
+    const totalVal = rows.reduce((s, r) => s + Number(r.valeur_immobilisee), 0);
+    $("#dormantBox").innerHTML = rows.length === 0
+      ? '<div class="empty">Aucun produit dormant — tout se vend !</div>'
+      : '<div class="row wrap" style="margin-bottom:8px"><p class="muted grow" style="margin:0">' + rows.length + ' produit(s) sans vente depuis ' + dormantJours + ' jours — valeur immobilisée : <b>' + money(totalVal) + '</b></p>'
+        + '<select id="dormantSel"><option value="15">15 jours</option><option value="30">30 jours</option><option value="60">60 jours</option><option value="90">90 jours</option></select>'
+        + '<button class="btn small" id="dormantCsv">CSV</button></div>'
+        + '<div class="table-wrap"><table><tr><th>Produit</th><th>Famille</th><th class="num">Stock</th><th class="num">Valeur immobilisée</th><th class="num">Jours sans vente</th><th>Dernière vente</th></tr>'
+        + rows.map(r => '<tr><td>' + esc(r.nom) + '</td><td>' + esc(r.famille_nom || '') + '</td>'
+          + '<td class="num">' + r.stock + '</td><td class="num">' + money(r.valeur_immobilisee) + '</td>'
+          + '<td class="num"><span class="badge ' + (r.jours_sans_vente > 60 ? "bad" : "warn") + '">' + r.jours_sans_vente + ' j</span></td>'
+          + '<td>' + (r.derniere_vente ? fmtDate(r.derniere_vente) : 'Jamais') + '</td></tr>').join('')
+        + '</table></div>';
+    var sel = $("#dormantSel"); if (sel) { sel.value = String(dormantJours); sel.addEventListener("change", function(e) { dormantJours = Number(e.target.value); renderers.dormant().catch(function(){}); }); }
+    var csvBtn = $("#dormantCsv"); if (csvBtn) csvBtn.addEventListener("click", function() {
+      var lines = [["Produit","Famille","Stock","Valeur","Jours sans vente","Derniere vente"]].concat(rows.map(function(r) { return [r.nom, r.famille_nom||"", r.stock, r.valeur_immobilisee, r.jours_sans_vente, r.derniere_vente||"Jamais"]; }));
+      downloadCsv("stock-dormant.csv", lines);
+    });
+  } catch (e) { toast(e.message); }
+};
+
+/* ---------- DEPENSES ---------- */
+renderers.depenses = async function () {
+  var rows = [];
+  try { rows = await api("/depenses"); } catch (e) { toast(e.message); return; }
+  var total = rows.reduce(function(s, r) { return s + Number(r.montant); }, 0);
+  var cats = ["Loyer","Electricite","Eau","Transport","Salaires","Courses boutique","Materiel","Maintenance","Communication","Autre"];
+  $("#depensesBox").innerHTML = '<div class="row wrap" style="margin-bottom:10px"><h2 class="grow" style="margin:0">Depenses</h2>'
+    + '<button class="btn primary" id="depAdd">+ Nouvelle depense</button></div>'
+    + (rows.length === 0 ? '<div class="empty">Aucune depense enregistree</div>'
+    : '<p class="muted" style="margin:0 0 8px">Total : <b>' + money(total) + '</b> — ' + rows.length + ' depense(s)</p>'
+    + '<div class="table-wrap"><table><tr><th>Date</th><th>Categorie</th><th>Motif</th><th>Mode</th><th class="num">Montant</th><th>Par</th><th></th></tr>'
+    + rows.map(function(r) { return '<tr><td>' + fmtDate(r.date) + '</td><td><span class="badge info">' + esc(r.categorie) + '</span></td>'
+      + '<td>' + esc(r.motif || '') + '</td><td>' + esc(r.mode || '') + '</td>'
+      + '<td class="num"><b>' + money(r.montant) + '</b></td><td>' + esc(r.user_nom || '') + '</td>'
+      + '<td><button class="btn small danger" data-deldep="' + r.id + '">\uD83D\uDDD1</button></td></tr>'; }).join('')
+    + '</table></div>');
+  var addBtn = $("#depAdd");
+  if (addBtn) addBtn.addEventListener("click", function() {
+    openModal('<h3>Nouvelle depense</h3>'
+      + '<label class="field">Montant (F) <input id="depMontant" type="number" min="1" placeholder="ex. 5000"></label>'
+      + '<label class="field">Categorie <select id="depCat">' + cats.map(function(c) { return '<option>' + c + '</option>'; }).join('') + '</select></label>'
+      + '<label class="field">Motif <input id="depMotif" placeholder="ex. Facture electricite juillet"></label>'
+      + '<label class="field">Mode de paiement <select id="depMode"><option value="especes">Especes</option><option value="mobile">Mobile money</option><option value="carte">Carte</option></select></label>'
+      + '<label class="field">Date <input id="depDate" type="date" value="' + todayKey() + '"></label>'
+      + '<div class="row"><button class="btn success grow" id="depSave">Enregistrer</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>');
+    $("#depSave").addEventListener("click", async function() {
+      var montant = Number($("#depMontant").value) || 0;
+      if (montant <= 0) { toast("Montant invalide"); return; }
+      try {
+        await api("/depenses", { method: "POST", body: JSON.stringify({
+          montant: montant, categorie: $("#depCat").value, motif: $("#depMotif").value.trim(),
+          mode: $("#depMode").value, date: $("#depDate").value
+        })});
+        toast("Depense enregistree"); closeModal(); renderers.depenses().catch(function(){});
+      } catch (e) { toast(e.message); }
+    });
+  });
+  $("#depensesBox [data-deldep]").forEach(function(b) { b.addEventListener("click", function() {
+    askConfirm("Supprimer la depense", "Confirmer la suppression ?", async function() {
+      try { await api("/depenses/" + b.dataset.deldep, { method: "DELETE" }); toast("Depense supprimee"); renderers.depenses().catch(function(){}); }
+      catch (e) { toast(e.message); }
+    }, { danger: true, okLabel: "Supprimer" });
+  }); });
+};
+
+/* ---------- ANALYSE ABC ---------- */
+renderers.abc = async function () {
+  var from = ($("#abcFrom") && $("#abcFrom").value) || todayKey();
+  var to = ($("#abcTo") && $("#abcTo").value) || todayKey();
+  try {
+    var r = await api("/rapports/abc?from=" + from + "&to=" + to);
+    var rows = r.rows || [];
+    var classA = rows.filter(function(x) { return x.classe === "A"; });
+    var classB = rows.filter(function(x) { return x.classe === "B"; });
+    var classC = rows.filter(function(x) { return x.classe === "C"; });
+    $("#abcBox").innerHTML = '<div class="cards" style="margin-bottom:14px">'
+      + '<div class="card"><div class="k">Classe A (80% du CA)</div><div class="v" style="color:var(--success)">' + classA.length + ' produits</div></div>'
+      + '<div class="card"><div class="k">Classe B (80-95%)</div><div class="v" style="color:var(--amber)">' + classB.length + ' produits</div></div>'
+      + '<div class="card"><div class="k">Classe C (95-100%)</div><div class="v" style="color:var(--danger)">' + classC.length + ' produits</div></div>'
+      + '<div class="card"><div class="k">CA total periode</div><div class="v">' + money(r.totalCA) + '</div></div>'
+      + '</div>'
+      + (rows.length === 0 ? '<div class="empty">Aucune vente sur cette periode</div>'
+      : '<div class="table-wrap"><table><tr><th>Classe</th><th>Produit</th><th>Famille</th><th class="num">Qte vendue</th><th class="num">CA</th><th class="num">% CA</th><th class="num">Cumul</th><th class="num">Benefice</th></tr>'
+      + rows.map(function(r) { return '<tr style="background:' + (r.classe === "A" ? "rgba(21,128,61,.05)" : r.classe === "C" ? "rgba(185,28,28,.04)" : "") + '">'
+        + '<td><span class="badge ' + (r.classe === "A" ? "ok" : r.classe === "B" ? "warn" : "bad") + '">' + r.classe + '</span></td>'
+        + '<td>' + esc(r.nom) + '</td><td>' + esc(r.famille || "") + '</td>'
+        + '<td class="num">' + r.qte + '</td><td class="num">' + money(r.ca) + '</td>'
+        + '<td class="num">' + r.pct.toFixed(1) + '%</td><td class="num">' + r.cumul.toFixed(1) + '%</td>'
+        + '<td class="num">' + money(r.benefice) + '</td></tr>'; }).join('')
+      + '</table></div>');
+  } catch (e) { toast(e.message); }
+};
+
 /* ---------- rapports ---------- */
 renderers.rapports = async function () {
   if (!$("#rapFrom").value) { $("#rapFrom").value = todayKey(); $("#rapTo").value = todayKey(); }
@@ -2247,6 +2345,23 @@ function bind() {
     else { $("#rapFrom").value = f(new Date(d.getFullYear(), d.getMonth(), 1)); $("#rapTo").value = f(d); }
     genRapport().catch(e => toast(e.message));
   }));
+  document.addEventListener("keydown", function(e) {
+    var tag = (e.target.tagName || "").toLowerCase();
+    var typing = tag === "input" || tag === "select" || tag === "textarea";
+    if (typing && !e.key.startsWith("F") && e.key !== "Escape") return;
+    if (curView === "vente") {
+      if (e.key === "F3") { e.preventDefault(); var lq = document.querySelector("#cartLines .qty input:last-child"); if (lq) { lq.focus(); lq.select(); } return; }
+      if (e.key === "F4") { e.preventDefault(); var r = document.getElementById("cartRemise"); if (r) { r.focus(); r.select(); } return; }
+      if (e.key === "F5") { e.preventDefault(); e.stopImmediatePropagation(); var m = document.getElementById("cartMode"); if (m) { m.selectedIndex = (m.selectedIndex + 1) % m.options.length; renderCart(); } return; }
+      if (e.key === "F6") { e.preventDefault(); toast("Vente suspendue (a venir)"); return; }
+      if (e.key === "F7") { e.preventDefault(); if (cart.length) { cart.pop(); renderCart(); toast("Dernier article retire"); } return; }
+      if (e.key === "F8") { e.preventDefault(); var vs = document.getElementById("venteSearch"); if (vs) { vs.focus(); vs.select(); } return; }
+      if (e.key === "F9") { e.preventDefault(); encaisser(); return; }
+      if (e.key === "F10") { e.preventDefault(); toast("Reimpression (a venir)"); return; }
+      if (e.key === "Escape" && !document.querySelector("#modal:not(.hidden)")) { if (cart.length) { askConfirm("Vider le panier", "Retirer tous les articles du panier ?", function() { cart = []; renderCart(); }, { danger: true, okLabel: "Vider" }); } return; }
+    }
+    if (e.key === "F2") { e.preventDefault(); var s = document.getElementById("venteSearch") || document.getElementById("prodSearch"); if (s) { s.focus(); s.select(); } return; }
+  });
   document.addEventListener("keydown", e => {
     if (e.key === "F2") { e.preventDefault(); if ($("#view-vente").classList.contains("active")) $("#venteSearch").focus(); }
     if (e.key === "F9") { e.preventDefault(); if ($("#view-vente").classList.contains("active") && !$("#encaisserBtn").disabled) encaisser(); }
@@ -2275,6 +2390,15 @@ function bind() {
   });
   $("#audUserFilter").addEventListener("change", () => renderers.journal().catch(() => { }));
   $("#audSearch").addEventListener("input", () => renderers.journal().catch(() => { }));
+  $("#abcGen").addEventListener("click", () => renderers.abc().catch(e => toast(e.message)));
+  $("#view-abc [data-abc]").forEach(b => b.addEventListener("click", () => {
+    const k = b.dataset.abc, d = new Date();
+    $("#abcTo").value = todayKey();
+    if (k === "today") $("#abcFrom").value = todayKey();
+    else if (k === "7j") { d.setDate(d.getDate()-6); $("#abcFrom").value = todayKey(d); }
+    else if (k === "month") { d.setDate(1); $("#abcFrom").value = todayKey(d); }
+    renderers.abc().catch(e => toast(e.message));
+  }));
   $("#audCsvBtn").addEventListener("click", async () => {
     let rows = [];
     try { rows = await api("/audit"); } catch (e) { toast(e.message); return; }

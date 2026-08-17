@@ -1032,6 +1032,110 @@ app.put("/api/caisse/:id/rouvrir", auth, need("R_POINT"), async (req, res) => {
   res.json({ ok: true });
 });
 
+
+/* ---------- STOCK DORMANT ---------- */
+app.get("/api/stock/dormant", auth, need("R_STOCK"), async (req, res) => {
+  const jours = Math.max(1, Number(req.query.jours || 30));
+  const { rows } = await pool.query(
+    `SELECT p.id, p.nom, p.code, p.famille, f.nom AS famille_nom, p.stock, p.prix_achat,
+            p.prix_vente, p.stock * p.prix_achat AS valeur_immobilisee,
+            COALESCE(MAX(v.date), NULL) AS derniere_vente,
+            COALESCE(SUM(vi.qte), 0) AS qte_vendue_periode,
+            CURRENT_DATE - COALESCE((SELECT MAX(v.date::date) FROM ventes v JOIN vente_items vi ON vi.vente_id = v.id WHERE vi.produit_id = p.id), p.created_at::date) AS jours_sans_vente
+     FROM produits p
+     LEFT JOIN familles f ON f.id = p.famille_id
+     LEFT JOIN vente_items vi ON vi.produit_id = p.id
+     LEFT JOIN ventes v ON v.id = vi.vente_id AND v.date >= CURRENT_DATE - $1::int
+     WHERE p.actif
+     GROUP BY p.id, f.nom
+     HAVING COALESCE(SUM(vi.qte), 0) = 0
+     ORDER BY jours_sans_vente DESC`, [jours]);
+  res.json(rows);
+});
+
+/* ---------- DÉPENSES ---------- */
+app.get("/api/depenses", auth, need("R_RAPPORTS"), async (req, res) => {
+  const { from, to } = req.query;
+  const { rows } = await pool.query(
+    `SELECT d.*, u.nom AS user_nom FROM depenses d
+     LEFT JOIN users u ON u.id = d.user_id
+     WHERE ($1::date IS NULL OR d.date::date >= $1)
+       AND ($2::date IS NULL OR d.date::date <= $2)
+     ORDER BY d.date DESC`, [from || null, to || null]);
+  res.json(rows);
+});
+app.post("/api/depenses", auth, need("R_PARAMS"), async (req, res) => {
+  const { montant, categorie, motif, mode, date } = req.body;
+  const m = Number(montant);
+  if (!m || m <= 0) return res.status(400).json({ error: "Montant invalide" });
+  if (!categorie) return res.status(400).json({ error: "Catégorie obligatoire" });
+  await tx(req.user.id, c => c.query(
+    "INSERT INTO depenses(date, montant, categorie, motif, mode, user_id) VALUES($1,$2,$3,$4,$5,$6)",
+    [date || new Date().toISOString(), m, categorie, motif || "", mode || "especes", req.user.id]));
+  broadcast({ type: "depenses" });
+  res.json({ ok: true });
+});
+app.delete("/api/depenses/:id", auth, need("R_PARAMS"), async (req, res) => {
+  await tx(req.user.id, c => c.query("DELETE FROM depenses WHERE id=$1", [req.params.id]));
+  broadcast({ type: "depenses" });
+  res.json({ ok: true });
+});
+
+/* ---------- EXPORT COMPTABLE ---------- */
+app.get("/api/export/comptable", auth, need("R_RAPPORTS"), async (req, res) => {
+  const { from, to } = req.query;
+  const { rows: ventes } = await pool.query(
+    `SELECT v.numero, v.date, u.nom AS caissiere, v.mode, v.total, v.remise, v.net,
+            COALESCE(SUM((vi.prix - vi.prix_achat) * vi.qte), 0) - v.remise AS benefice
+     FROM ventes v
+     LEFT JOIN users u ON u.id = v.user_id
+     LEFT JOIN vente_items vi ON vi.vente_id = v.id
+     WHERE v.date::date BETWEEN $1 AND $2
+     GROUP BY v.id, u.nom
+     ORDER BY v.date`, [from, to]);
+  const { rows: depenses } = await pool.query(
+    `SELECT * FROM depenses WHERE date::date BETWEEN $1 AND $2 ORDER BY date`, [from, to]);
+  // CSV format
+  const lines = [["TYPE","DATE","NUMERO","CAISSIERE","CATEGORIE","MODE","DEBIT","CREDIT","BENEFICE"]];
+  for (const v of ventes) {
+    lines.push(["VENTE", v.date.toISOString().slice(0,10), v.numero, v.caissiere || "", "", v.mode, "", String(v.net), String(Math.round(v.benefice))]);
+  }
+  for (const d of depenses) {
+    lines.push(["DEPENSE", d.date.toISOString().slice(0,10), "", "", d.categorie, d.mode || "", String(d.montant), "", ""]);
+  }
+  const csv = lines.map(r => r.map(c => '"' + c + '"').join(";")).join("\n");
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="export-comptable.csv"');
+  res.send("\ufeff" + csv);
+});
+
+/* ---------- ANALYSE ABC (Pareto) ---------- */
+app.get("/api/rapports/abc", auth, need("R_RAPPORTS"), async (req, res) => {
+  const { from, to } = req.query;
+  const { rows } = await pool.query(
+    `SELECT vi.produit_id, p.nom, p.code, f.nom AS famille,
+            SUM(vi.qte) AS qte, SUM(vi.qte * vi.prix) AS ca,
+            SUM((vi.prix - vi.prix_achat) * vi.qte) AS benefice
+     FROM vente_items vi
+     JOIN ventes v ON v.id = vi.vente_id
+     JOIN produits p ON p.id = vi.produit_id
+     LEFT JOIN familles f ON f.id = p.famille_id
+     WHERE v.date::date BETWEEN $1 AND $2
+     GROUP BY vi.produit_id, p.nom, p.code, f.nom
+     ORDER BY ca DESC`, [from, to]);
+  const totalCA = rows.reduce((s, r) => s + Number(r.ca), 0);
+  let cumul = 0;
+  rows.forEach(r => {
+    r.pct = totalCA > 0 ? (Number(r.ca) / totalCA * 100) : 0;
+    cumul += r.pct;
+    r.cumul = cumul;
+    r.classe = cumul <= 80 ? "A" : cumul <= 95 ? "B" : "C";
+    r.ca = Number(r.ca); r.benefice = Number(r.benefice); r.qte = Number(r.qte);
+  });
+  res.json({ rows, totalCA, nbProduits: rows.length });
+});
+
+
 /* ---------- démarrage ---------- */
 /* ---------- Module Stock avanc� (magasins, services, bons FEFO, inventaires, r�appro) ---------- */
 require("./module-stock")({ app, auth, need, broadcast });

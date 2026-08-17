@@ -54,7 +54,10 @@
     <a class="nav-link" data-view="rapports" data-right="R_RAPPORTS">📊 Bénéfices</a>
     <a class="nav-link" data-view="journal" data-right="R_JOURNAL">🕵️ Journal d'activité</a>
     <a class="nav-link" data-view="params" data-right="R_PARAMS">⚙️ Paramètres</a>
-    <a class="nav-link" data-view="stockmod" data-right="R_STOCK">💡 Aide stock</a>
+    <a class="nav-link" data-view="stockmod" data-right="R_STOCK">📦 Aide stock</a>
+    <a class="nav-link" data-view="dormant" data-right="R_STOCK">💤 Stock dormant</a>
+    <a class="nav-link" data-view="depenses" data-right="R_RAPPORTS">💸 Dépenses</a>
+    <a class="nav-link" data-view="abc" data-right="R_RAPPORTS">📊 Analyse ABC</a>
   </nav>
 
   <main id="main" class="main">
@@ -175,7 +178,8 @@
           </select>
         </label>
         <button id="rapGenBtn" class="btn primary">Générer</button>
-        <button id="rapPrintBtn" class="btn ghost">🖨️ Imprimer</button>
+        <button id="rapPrintBtn" class="btn ghost">🖨 Imprimer</button>
+        <button id="rapExportBtn" class="btn ghost">📊 Export comptable</button>
       </div>
       <div class="chips" style="margin-top:6px">
         <button class="chip-btn" data-per="today">Aujourd'hui</button>
@@ -207,6 +211,34 @@
     <section id="view-stockmod" class="view">
       <h2>Aide stock</h2>
       <div id="stockmodBox" class="panel"></div>
+    </section>
+
+  
+    <!-- STOCK DORMANT -->
+    <section id="view-dormant" class="view">
+      <h2>💤 Stock dormant</h2>
+      <div id="dormantBox" class="panel"></div>
+    </section>
+
+    <!-- DÉPENSES -->
+    <section id="view-depenses" class="view">
+      <div id="depensesBox" class="panel"></div>
+    </section>
+
+    <!-- ANALYSE ABC -->
+    <section id="view-abc" class="view">
+      <h2>📊 Analyse ABC (Pareto)</h2>
+      <div class="row wrap" style="margin-bottom:10px">
+        <label class="field">Du <input id="abcFrom" type="date"></label>
+        <label class="field">Au <input id="abcTo" type="date"></label>
+        <button class="btn primary" id="abcGen">Générer</button>
+      </div>
+      <div class="chips">
+        <button class="chip-btn" data-abc="today">Aujourd'hui</button>
+        <button class="chip-btn" data-abc="7j">7 jours</button>
+        <button class="chip-btn" data-abc="month">Ce mois</button>
+      </div>
+      <div id="abcBox" class="panel"></div>
     </section>
 
   </main>

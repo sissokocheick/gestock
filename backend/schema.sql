@@ -251,6 +251,20 @@ CREATE TABLE IF NOT EXISTS commande_items (
 INSERT INTO parametres(cle, valeur) VALUES ('show_demo','1')
 ON CONFLICT (cle) DO UPDATE SET valeur = EXCLUDED.valeur;
 
+-- Dépenses (loyer, électricité, transport, etc.)
+CREATE TABLE IF NOT EXISTS depenses (
+  id         BIGSERIAL PRIMARY KEY,
+  date       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  montant    NUMERIC(12,2) NOT NULL CHECK (montant > 0),
+  categorie  TEXT NOT NULL,
+  motif      TEXT,
+  mode       TEXT NOT NULL DEFAULT 'especes',
+  user_id    BIGINT REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_depenses_date ON depenses(date);
+CREATE INDEX IF NOT EXISTS idx_depenses_categorie ON depenses(categorie);
+
 -- Journal d'audit (qui a fait quoi, quand)
 CREATE TABLE IF NOT EXISTS audit_log (
   id        BIGSERIAL PRIMARY KEY,
@@ -305,6 +319,7 @@ CREATE TRIGGER trg_audit_lots AFTER INSERT OR UPDATE OR DELETE ON lots FOR EACH 
 CREATE TRIGGER trg_audit_fournisseurs AFTER INSERT OR UPDATE OR DELETE ON fournisseurs FOR EACH ROW EXECUTE FUNCTION audit_trigger_fn();
 CREATE TRIGGER trg_audit_commandes AFTER INSERT OR UPDATE ON commandes FOR EACH ROW EXECUTE FUNCTION audit_trigger_fn();
 CREATE TRIGGER trg_audit_commande_items AFTER INSERT ON commande_items FOR EACH ROW EXECUTE FUNCTION audit_trigger_fn();
+CREATE TRIGGER trg_audit_depenses AFTER INSERT OR UPDATE OR DELETE ON depenses FOR EACH ROW EXECUTE FUNCTION audit_trigger_fn();
 CREATE TRIGGER trg_audit_boutique  AFTER UPDATE ON boutique                         FOR EACH ROW EXECUTE FUNCTION audit_trigger_fn();
 
 -- ============================================================
