@@ -320,3 +320,20 @@ tr:hover td.sticky-l, tr:hover td.sticky-r { background: #f8fafc; }
 .confirm-box{animation:cfPop .16s ease-out}
 @keyframes cfPop{from{transform:scale(.93);opacity:0}to{transform:scale(1);opacity:1}}
 .confirm-ic{box-shadow:0 6px 16px rgba(14,116,144,.18)}
+
+/* --- boutons montants rapides + rendu + badge stock --- */
+.recu-quick{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 4px}
+.recu-quick button{flex:1 1 auto;min-width:56px;padding:8px 6px;border:1px solid var(--border);border-radius:9px;background:#fff;font-weight:700;font-size:13px;color:var(--ink);cursor:pointer;transition:.12s}
+.recu-quick button:hover{border-color:var(--primary);background:#e0f2f7}
+.recu-quick button.exact{background:var(--primary);color:#fff;border-color:var(--primary)}
+#cartRendu{font-size:14px;color:var(--muted);margin:8px 0 0}
+#cartRendu.ok{font-size:22px;font-weight:800;color:var(--success)}
+#cartRendu.ko{font-size:14px;font-weight:700;color:var(--danger)}
+.stock-badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600}
+.stock-badge .dot{width:8px;height:8px;border-radius:50%;flex:none}
+.stock-badge.ok{color:var(--success)}
+.stock-badge.ok .dot{background:var(--success)}
+.stock-badge.low{color:var(--amber)}
+.stock-badge.low .dot{background:var(--amber)}
+.stock-badge.out{color:var(--danger)}
+.stock-badge.out .dot{background:var(--danger)}

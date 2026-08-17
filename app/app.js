@@ -495,7 +495,7 @@ function renderVenteGrid() {
         ${p.photo ? `<img src="${p.photo}" style="width:100%;height:64px;object-fit:cover;border-radius:8px;margin-bottom:6px">` : ""}
         <div class="pn">${esc(p.nom)}</div>
         <div class="pp">${money(p.prix_vente)}</div>
-        <div class="ps">${hasRight("R_RAPPORTS") ? `Stock : ${p.stock}${p.stock_min ? " • min " + p.stock_min : ""}` : (Number(p.stock) <= 0 ? "⚠️ Rupture" : Number(p.stock) <= Number(p.stock_min) ? "⚠️ Stock faible" : "✅ En stock")}</div>
+        <div class="ps"><span class="stock-badge ${Number(p.stock) <= 0 ? "out" : Number(p.stock) <= Number(p.stock_min) ? "low" : "ok"}"><span class="dot"></span>${hasRight("R_RAPPORTS") ? `Stock : ${p.stock}${p.stock_min ? " · min " + p.stock_min : ""}` : (Number(p.stock) <= 0 ? "Rupture" : Number(p.stock) <= Number(p.stock_min) ? "Stock faible" : "En stock")}</span></div>
       </div>`).join(""));
   $$("#venteGrid .prod-card").forEach(c => c.addEventListener("click", () => {
     const p = produitById(c.dataset.pid);
@@ -559,8 +559,39 @@ function renderCart() {
   $("#recuWrap").classList.toggle("hidden", !esp);
   if (esp) {
     const recu = Number($("#cartRecu").value) || 0;
-    $("#cartRendu").textContent = recu >= net ? `Rendu : ${money(recu - net)}` : "Montant reçu insuffisant";
-  } else $("#cartRendu").textContent = "";
+    const rendu = $("#cartRendu");
+    if (net > 0 && recu >= net) {
+      rendu.textContent = "Rendu : " + money(recu - net);
+      rendu.className = "ok";
+    } else if (net > 0 && recu > 0 && recu < net) {
+      rendu.textContent = "Manque : " + money(net - recu);
+      rendu.className = "ko";
+    } else {
+      rendu.textContent = "";
+      rendu.className = "";
+    }
+    const q = $("#cartRecuQuick");
+    if (q) {
+      if (net > 0) {
+        const denoms = [500, 1000, 2000, 5000, 10000];
+        q.innerHTML = denoms.map(d => '<button type="button" data-amt="' + d + '">' + (d >= 1000 ? (d / 1000) + " 000" : d) + '</button>').join("") + '<button type="button" data-amt="exact" class="exact">Exact</button>';
+        q.classList.remove("hidden");
+        q.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+          const amt = b.dataset.amt;
+          const cur = Number($("#cartRecu").value) || 0;
+          $("#cartRecu").value = amt === "exact" ? net : cur + Number(amt);
+          renderCart();
+        }));
+      } else {
+        q.classList.add("hidden");
+      }
+    }
+  } else {
+    const rendu = $("#cartRendu");
+    if (rendu) { rendu.textContent = ""; rendu.className = ""; }
+    const q = $("#cartRecuQuick");
+    if (q) q.classList.add("hidden");
+  }
 }
 async function encaisser() {
   if (cart.length === 0) { toast("Panier vide"); return; }
@@ -2440,7 +2471,7 @@ function bind() {
   $("#cartMode").addEventListener("change", renderCart);
   $("#cartRecu").addEventListener("input", renderCart);
   if (document.getElementById("cartRecu")) document.getElementById("cartRecu").addEventListener("focus", function() { if (Number(this.value) === 0) this.value = ""; });
-  if (document.getElementById("cartRecu")) document.getElementById("cartRecu").addEventListener("blur", function() { if (!this.value) { this.value = 0; renderCart(); } });
+  if (document.getElementById("cartRecu")) document.getElementById("cartRecu").addEventListener("blur", function() { if (!this.value) { this.value = 0; } });
   if ($("#cartRecu")) $("#cartRecu").addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); encaisser(); } });
   $("#venteSearch").addEventListener("input", e => { venteFilter = e.target.value; renderVenteGrid(); });
   $("#venteSearch").addEventListener("keydown", e => { if (e.key === "Enter" && venteFilter) { const f = venteFilter.toLowerCase(); const matches = DB.produits.filter(p => p.actif && Number(p.stock) > 0 && (!f || p.nom.toLowerCase().includes(f) || (p.code || "").includes(f))); if (matches.length) { const last = matches[matches.length - 1]; addToCart(last.id, 1); toast("Ajouté : " + last.nom); $("#venteSearch").value = ""; venteFilter = ""; renderVenteGrid(); } else if (!addByCode(venteFilter)) { toast("Produit introuvable : " + venteFilter); } } });
