@@ -293,7 +293,7 @@ function go(view) {
 }
 
 /* ---------- chargement & erreur réseau ---------- */
-const VIEW_BOX = { accueil: "#dashCards", vente: "#venteGrid", releve: "#releveBox", produits: "#prodWrap", stock: "#stockWrap", point: "#pointBox", users: "#usersWrap", rapports: "#rapportBox", journal: "#journalWrap", params: "#paramsBox", stockmod: "#stockmodBox", dormant: "#dormantBox", depenses: "#depensesBox", abc: "#abcBox", versements: "#versementBox" };
+const VIEW_BOX = { accueil: "#dashCards", vente: "#venteGrid", releve: "#releveBox", produits: "#prodWrap", stock: "#stockWrap", point: "#pointBox", users: "#usersWrap", rapports: "#rapportBox", journal: "#journalWrap", params: "#paramsBox", depenses: "#depensesBox", versements: "#versementBox" };
 function viewLoading(view) {
   const sel = VIEW_BOX[view];
   if (sel) { const el = $(sel); if (el) el.innerHTML = `<div class="empty">⏳ Chargement…</div>`; }
@@ -1003,7 +1003,7 @@ renderers.stock = async function () {
     try { [lots, four, cmds] = await Promise.all([api("/lots"), api("/fournisseurs"), api("/commandes")]); } catch (e) { }
   }
   DB.lots = lots; DB.fournisseurs = four; DB.commandes = cmds;
-  const tabs = [["produits", "📦 Produits"], ["mouvements", "🔁 Entrées & sorties"], ["peremptions", "⏰ Péremptions"], ["fournisseurs", "👥 Fournisseurs"], ["commandes", "📋 Commandes"]];
+  const tabs = [["produits", "📦 Produits"], ["mouvements", "🔁 Entrées & sorties"], ["peremptions", "⏰ Péremptions"], ["acommander", "🛒 À commander"], ["fournisseurs", "👥 Fournisseurs"], ["commandes", "📋 Commandes"], ["dormant", "💤 Stock dormant"]];
   $("#stockWrap").innerHTML = `
     <div class="tabs" style="margin-bottom:10px">${tabs.map(t => `<button class="tab ${stTab === t[0] ? "on" : ""}" data-stab="${t[0]}">${t[1]}</button>`).join("")}</div>
     <div id="stBody"></div>`;
@@ -1012,8 +1012,10 @@ renderers.stock = async function () {
   if (stTab === "produits") renderStProduits(box, prods);
   else if (stTab === "mouvements") renderStMouvements(box, prods);
   else if (stTab === "peremptions") renderStPeremptions(box, lots);
+  else if (stTab === "acommander") AppStock.renderCommander(box);
   else if (stTab === "fournisseurs") renderStFournisseurs(box, four);
-  else renderStCommandes(box, cmds);
+  else if (stTab === "commandes") renderStCommandes(box, cmds);
+  else if (stTab === "dormant") renderers.dormant(box).catch(() => {});
 };
 
 function renderStProduits(box, prods) {
@@ -1062,6 +1064,7 @@ function renderStProduits(box, prods) {
 
 function renderStMouvements(box, prods) {
   box.innerHTML = `
+    <div id="stkSortieBox"></div>
     <div class="row wrap" style="margin-bottom:8px">
       <button class="btn primary" id="bonEntreeBtn">➕ Bon d'entrée (plusieurs produits)</button>
       <button class="btn" id="bonSortieBtn">➖ Bon de sortie (plusieurs produits)</button>
@@ -1080,6 +1083,8 @@ function renderStMouvements(box, prods) {
     <div class="row" id="mvtNav" style="margin-top:8px"></div>`;
   $("#bonEntreeBtn").addEventListener("click", () => bonForm("entree"));
   $("#bonSortieBtn").addEventListener("click", () => bonForm("sortie"));
+  const stkSortie = $("#stkSortieBox");
+  if (stkSortie && typeof AppStock !== "undefined") AppStock.renderSortie(stkSortie);
   $("#mvtType").addEventListener("change", e => { mvtF.type = e.target.value; pgReset("mouvements"); renderMouvements(); });
   $("#mvtProd").addEventListener("change", e => { mvtF.produit = e.target.value; pgReset("mouvements"); renderMouvements(); });
   $("#mvtFrom").addEventListener("change", e => { mvtF.from = e.target.value; pgReset("mouvements"); renderMouvements(); });
@@ -1911,11 +1916,13 @@ async function roleForm() {
 
 /* ---------- STOCK DORMANT ---------- */
 let dormantJours = 30;
-renderers.dormant = async function () {
+renderers.dormant = async function (box) {
+  box = box || $("#dormantBox");
+  if (!box) return;
   try {
     const rows = await api("/stock/dormant?jours=" + dormantJours);
     const totalVal = rows.reduce((s, r) => s + Number(r.valeur_immobilisee), 0);
-    $("#dormantBox").innerHTML = rows.length === 0
+    box.innerHTML = rows.length === 0
       ? '<div class="empty">Aucun produit dormant — tout se vend !</div>'
       : '<div class="row wrap" style="margin-bottom:8px"><p class="muted grow" style="margin:0">' + rows.length + ' produit(s) sans vente depuis ' + dormantJours + ' jours — valeur immobilisée : <b>' + money(totalVal) + '</b></p>'
         + '<select id="dormantSel"><option value="15">15 jours</option><option value="30">30 jours</option><option value="60">60 jours</option><option value="90">90 jours</option></select>'
@@ -1926,7 +1933,7 @@ renderers.dormant = async function () {
           + '<td class="num"><span class="badge ' + (r.jours_sans_vente > 60 ? "bad" : "warn") + '">' + r.jours_sans_vente + ' j</span></td>'
           + '<td>' + (r.derniere_vente ? fmtDate(r.derniere_vente) : 'Jamais') + '</td></tr>').join('')
         + '</table></div>';
-    var sel = $("#dormantSel"); if (sel) { sel.value = String(dormantJours); sel.addEventListener("change", function(e) { dormantJours = Number(e.target.value); renderers.dormant().catch(function(){}); }); }
+    var sel = $("#dormantSel"); if (sel) { sel.value = String(dormantJours); sel.addEventListener("change", function(e) { dormantJours = Number(e.target.value); renderers.dormant(box).catch(function(){}); }); }
     var csvBtn = $("#dormantCsv"); if (csvBtn) csvBtn.addEventListener("click", function() {
       var lines = [["Produit","Famille","Stock","Valeur","Jours sans vente","Derniere vente"]].concat(rows.map(function(r) { return [r.nom, r.famille_nom||"", r.stock, r.valeur_immobilisee, r.jours_sans_vente, r.derniere_vente||"Jamais"]; }));
       downloadCsv("stock-dormant.csv", lines);
@@ -1980,16 +1987,44 @@ renderers.depenses = async function () {
 };
 
 /* ---------- ANALYSE ABC ---------- */
-renderers.abc = async function () {
-  var from = ($("#abcFrom") && $("#abcFrom").value) || todayKey();
-  var to = ($("#abcTo") && $("#abcTo").value) || todayKey();
+renderers.abc = async function (box) {
+  box = box || $("#abcBox");
+  if (!box) return;
+  var from = todayKey(), to = todayKey();
+  var exFrom = box.querySelector("#abcFrom");
+  if (exFrom) { from = exFrom.value; to = box.querySelector("#abcTo").value; }
+  else {
+    box.innerHTML = `
+      <div class="row wrap" style="margin-bottom:10px">
+        <label class="field">Du <input id="abcFrom" type="date" value="${from}"></label>
+        <label class="field">Au <input id="abcTo" type="date" value="${to}"></label>
+        <button class="btn primary" id="abcGen">Générer</button>
+      </div>
+      <div class="chips" style="margin-top:6px">
+        <button class="chip-btn" data-abc="today">Aujourd'hui</button>
+        <button class="chip-btn" data-abc="7j">7 jours</button>
+        <button class="chip-btn" data-abc="month">Ce mois</button>
+      </div>
+      <div id="abcResult"></div>`;
+    box.querySelector("#abcGen").addEventListener("click", () => renderers.abc(box).catch(e => toast(e.message)));
+    box.querySelectorAll("[data-abc]").forEach(b => b.addEventListener("click", () => {
+      const k = b.dataset.abc, d = new Date();
+      box.querySelector("#abcTo").value = todayKey();
+      if (k === "today") box.querySelector("#abcFrom").value = todayKey();
+      else if (k === "7j") { d.setDate(d.getDate() - 6); box.querySelector("#abcFrom").value = todayKey(d); }
+      else if (k === "month") { d.setDate(1); box.querySelector("#abcFrom").value = todayKey(d); }
+      renderers.abc(box).catch(e => toast(e.message));
+    }));
+  }
+  var resBox = box.querySelector("#abcResult");
+  if (resBox) resBox.innerHTML = '<div class="empty">⏳ Chargement…</div>';
   try {
     var r = await api("/rapports/abc?from=" + from + "&to=" + to);
     var rows = r.rows || [];
     var classA = rows.filter(function(x) { return x.classe === "A"; });
     var classB = rows.filter(function(x) { return x.classe === "B"; });
     var classC = rows.filter(function(x) { return x.classe === "C"; });
-    $("#abcBox").innerHTML = '<div class="cards" style="margin-bottom:14px">'
+    var html = '<div class="cards" style="margin-bottom:14px">'
       + '<div class="card"><div class="k">Classe A (80% du CA)</div><div class="v" style="color:var(--success)">' + classA.length + ' produits</div></div>'
       + '<div class="card"><div class="k">Classe B (80-95%)</div><div class="v" style="color:var(--amber)">' + classB.length + ' produits</div></div>'
       + '<div class="card"><div class="k">Classe C (95-100%)</div><div class="v" style="color:var(--danger)">' + classC.length + ' produits</div></div>'
@@ -2004,12 +2039,17 @@ renderers.abc = async function () {
         + '<td class="num">' + r.pct.toFixed(1) + '%</td><td class="num">' + r.cumul.toFixed(1) + '%</td>'
         + '<td class="num">' + money(r.benefice) + '</td></tr>'; }).join('')
       + '</table></div>');
-  } catch (e) { toast(e.message); }
+    if (resBox) resBox.innerHTML = html;
+  } catch (e) { if (resBox) resBox.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; }
 };
 
 /* ---------- rapports ---------- */
 renderers.rapports = async function () {
   if (!$("#rapFrom").value) { $("#rapFrom").value = todayKey(); $("#rapTo").value = todayKey(); }
+  document.querySelectorAll("#view-rapports [data-rtab]").forEach(x => x.classList.toggle("on", x.dataset.rtab === "benefices"));
+  const ben = $("#rapBenPane"), abc = $("#rapAbcPane");
+  if (ben) ben.classList.remove("hidden");
+  if (abc) abc.classList.add("hidden");
   genRapport().catch(e => toast(e.message));
 };
 async function genRapport() {
@@ -2678,21 +2718,20 @@ document.addEventListener("keydown", function(e) {
     if (b.dataset.ptab === "journal") renderers.journal().catch(() => {});
     if (b.dataset.ptab === "personnel") renderers.users().catch(() => {});
     if (b.dataset.ptab === "boutique") renderers.params().catch(() => {});
-    if (b.dataset.ptab === "aide") AppStock.render();
   }));
   $("#rapPrintBtn").addEventListener("click", () => {
     imprimer("Rapport", `<h2>Rapport du ${$("#rapFrom").value} au ${$("#rapTo").value} (par ${$("#rapGroup").value})</h2>` + $("#rapportBox").innerHTML, "A4");
   });
   $("#audUserFilter").addEventListener("change", () => renderers.journal().catch(() => { }));
   $("#audSearch").addEventListener("input", () => renderers.journal().catch(() => { }));
-  $("#abcGen").addEventListener("click", () => renderers.abc().catch(e => toast(e.message)));
-  document.querySelectorAll("#view-abc [data-abc]").forEach(b => b.addEventListener("click", () => {
-    const k = b.dataset.abc, d = new Date();
-    $("#abcTo").value = todayKey();
-    if (k === "today") $("#abcFrom").value = todayKey();
-    else if (k === "7j") { d.setDate(d.getDate()-6); $("#abcFrom").value = todayKey(d); }
-    else if (k === "month") { d.setDate(1); $("#abcFrom").value = todayKey(d); }
-    renderers.abc().catch(e => toast(e.message));
+  document.querySelectorAll("#view-rapports [data-rtab]").forEach(b => b.addEventListener("click", () => {
+    const t = b.dataset.rtab;
+    document.querySelectorAll("#view-rapports [data-rtab]").forEach(x => x.classList.toggle("on", x === b));
+    const ben = $("#rapBenPane"), abc = $("#rapAbcPane");
+    if (ben) ben.classList.toggle("hidden", t !== "benefices");
+    if (abc) abc.classList.toggle("hidden", t !== "abc");
+    if (t === "abc") renderers.abc($("#abcBox")).catch(e => toast(e.message));
+    else genRapport().catch(e => toast(e.message));
   }));
   $("#audCsvBtn").addEventListener("click", async () => {
     let rows = [];

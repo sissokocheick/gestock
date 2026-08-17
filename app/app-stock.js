@@ -1,9 +1,7 @@
 /* ============================================================
-   Aide stock — version simplifiée du Module Stock
-   Trois actions utiles, sans complexité :
-     1) Péremptions : lots à sortir avant expiration (+ rebut 1 clic)
-     2) À commander : produits sous le seuil → commande fournisseur
-     3) Sortie rapide : sortir des quantités (don, usage interne…)
+   Module Stock — actions rapides intégrées à la page Stock
+     1) À commander : produits sous le seuil → commande fournisseur
+     2) Sortie rapide : sortir des quantités (don, usage interne…)
    Chargé après app.js ; aucune collision de noms (IIFE).
    ============================================================ */
 window.AppStock = (function () {
@@ -11,6 +9,7 @@ window.AppStock = (function () {
   const API = location.origin + "/api";
   const token = () => localStorage.getItem("gs_token") || null;
   let styleInjected = false;
+  let cmdBox = null;
 
   if (!styleInjected && typeof document !== "undefined") {
     const st = document.createElement("style");
@@ -48,28 +47,15 @@ window.AppStock = (function () {
   const fmt = n => Number(n || 0).toLocaleString("fr-FR", { maximumFractionDigits: 2 });
   const fmtDate = d => d ? new Date(d).toLocaleDateString("fr-FR") : "";
 
-  async function render() {
-    const box = document.getElementById("stockmodBox");
+  async function renderCommander(box) {
     if (!box) return;
+    cmdBox = box;
     box.innerHTML = `<div class="stk-mut">Chargement…</div>`;
     try {
-      const [magasins, produits, peremptions, suggestions, fournisseurs] = await Promise.all([
-        api("/magasins"), api("/produits"), api("/stock/peremptions?jours=30"), api("/reappro/suggestions"), api("/fournisseurs")
+      const [suggestions, fournisseurs] = await Promise.all([
+        api("/reappro/suggestions"), api("/fournisseurs")
       ]);
-      const magId = (magasins && magasins[0]) ? magasins[0].id : null;
       box.innerHTML = `
-        <div class="stk-card"><h3>⚠️ Péremptions (30 prochains jours)</h3>
-          ${peremptions.length
-            ? `<div style="overflow-x:auto"><table class="stk-table"><tr><th>Produit</th><th>Quantité</th><th>Expire le</th><th>Jours</th><th></th></tr>
-              ${peremptions.map(l => `<tr><td>${esc(l.produit_nom)} <span class="stk-mut">(${esc(l.code || "")})</span></td>
-                <td>${fmt(l.qte_restante)}</td><td>${fmtDate(l.date_peremption)}</td>
-                <td><span class="stk-pill ${Number(l.jours_restants) <= 0 ? "stk-bad" : "stk-warn"}">${Number(l.jours_restants) <= 0 ? "périmé !" : l.jours_restants + " j"}</span></td>
-                <td><button class="stk-btn danger" onclick="AppStock.rebutLot(${l.lot_id})">Rebuter</button></td></tr>`).join("")}
-              </table></div>
-              <div class="stk-mut">Un lot rebuté sort du stock (destruction tracée). Les lots périmés ne peuvent plus être vendus.</div>`
-            : `<div class="stk-empty">✅ Aucune péremption dans les 30 prochains jours</div>`}
-        </div>
-
         <div class="stk-card"><h3>📦 À commander (sous le seuil)</h3>
           ${suggestions.length
             ? `<div style="overflow-x:auto"><table class="stk-table"><tr><th>Produit</th><th>En stock</th><th>Seuil</th><th>À commander</th></tr>
@@ -82,8 +68,24 @@ window.AppStock = (function () {
                 <div style="align-self:end"><button class="stk-btn" onclick="AppStock.commanderTout()">Créer la commande</button></div>
               </div>`
             : `<div class="stk-empty">✅ Tout est au-dessus du seuil</div>`}
-        </div>
+        </div>`;
+      const stkFourSel = box.querySelector("#stkFourSel");
+      if (stkFourSel) stkFourSel.addEventListener("change", () => {
+        const nv = box.querySelector("#stkFourNew");
+        if (nv) nv.style.display = stkFourSel.value === "__new__" ? "" : "none";
+      });
+    } catch (e) {
+      box.innerHTML = `<div class="stk-bad" style="padding:8px 10px;border-radius:8px">${esc(e.message)}</div>`;
+    }
+  }
 
+  async function renderSortie(box) {
+    if (!box) return;
+    box.innerHTML = `<div class="stk-mut">Chargement…</div>`;
+    try {
+      const [magasins, produits] = await Promise.all([api("/magasins"), api("/produits")]);
+      const magId = (magasins && magasins[0]) ? magasins[0].id : null;
+      box.innerHTML = `
         <div class="stk-card"><h3>🚚 Sortie rapide (don, usage interne…)</h3>
           <div class="stk-grid">
             <div><label>Produit</label><select id="stkProd">${produits.filter(p => p.actif !== false).map(p => `<option value="${p.id}">${esc(p.nom)}${p.code ? " (" + esc(p.code) + ")" : ""}</option>`).join("")}</select></div>
@@ -92,20 +94,9 @@ window.AppStock = (function () {
             <div style="align-self:end"><button class="stk-btn" onclick="AppStock.sortieRapide(${magId || "null"})">Enregistrer la sortie</button></div>
           </div>
         </div>`;
-    const stkFourSel = document.getElementById("stkFourSel");
-    if (stkFourSel) stkFourSel.addEventListener("change", () => {
-      const nv = document.getElementById("stkFourNew");
-      if (nv) nv.style.display = stkFourSel.value === "__new__" ? "" : "none";
-    });
     } catch (e) {
       box.innerHTML = `<div class="stk-bad" style="padding:8px 10px;border-radius:8px">${esc(e.message)}</div>`;
     }
-  }
-
-  async function rebutLot(lotId) {
-    if (!confirm("Sortir ce lot en rebut ? Le stock sera retiré (destruction tracée).")) return;
-    try { await api("/lots/" + lotId + "/rebut", { method: "POST" }); toast("Lot rebuté"); render(); }
-    catch (e) { toast("Erreur : " + e.message); }
   }
 
   async function commanderTout() {
@@ -122,7 +113,7 @@ window.AppStock = (function () {
         fait++;
       }
       toast(fait + " commande(s) créée(s) pour " + nom);
-      render();
+      if (cmdBox) renderCommander(cmdBox);
     } catch (e) { toast("Erreur : " + e.message); }
   }
 
@@ -139,9 +130,8 @@ window.AppStock = (function () {
       })});
       await api("/bons/" + b.id + "/valider", { method: "POST" });
       toast("Sortie enregistrée (" + qte + ")" + (motif ? " — " + motif : ""));
-      render();
     } catch (e) { toast("Erreur : " + e.message); }
   }
 
-  return { render, rebutLot, commanderTout, sortieRapide };
+  return { renderCommander, renderSortie, commanderTout, sortieRapide };
 })();
