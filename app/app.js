@@ -314,6 +314,9 @@ renderers.accueil = async function () {
   const k = todayKey();
   const [vts, prods] = await Promise.all([api("/ventes?date=" + k), api("/produits")]);
   DB.produits = prods;
+  let caY = 0, benY = 0, ticketsY = 0;
+  try { const yk = todayKey(new Date(Date.now() - 86400000)); const vy = await api("/ventes?date=" + yk); caY = vy.reduce((s, v) => s + Number(v.net), 0); benY = vy.reduce((s, v) => s + Number(v.benefice || 0), 0); ticketsY = vy.length; } catch (e) { }
+  const dh = (t, y) => { if (y <= 0) return t > 0 ? '<div class="delta up">Nouveau</div>' : ""; const p = Math.round((t - y) / y * 100); if (p === 0) return '<div class="delta">= hier</div>'; return p > 0 ? '<div class="delta up">▲ +' + p + ' % vs hier</div>' : '<div class="delta down">▼ ' + p + ' % vs hier</div>'; };
   const da = $("#dashActions");
   if (da) {
     const acts = [];
@@ -346,9 +349,9 @@ renderers.accueil = async function () {
   const ben = vts.reduce((s, v) => s + Number(v.benefice || 0), 0);
   const valStock = prods.reduce((s, p) => s + Number(p.prix_achat) * Number(p.stock), 0);
   $("#dashCards").innerHTML = `
-    <div class="card"><div class="k">Chiffre d'affaires</div><div class="v">${money(ca)}</div></div>
-    <div class="card"><div class="k">Bénéfice du jour</div><div class="v ok">${money(ben)}</div></div>
-    <div class="card"><div class="k">Tickets</div><div class="v">${vts.length}</div></div>
+    <div class="card"><div class="k">Chiffre d'affaires</div><div class="v">${money(ca)}</div>${dh(ca, caY)}</div>
+    <div class="card"><div class="k">Bénéfice du jour</div><div class="v ok">${money(ben)}</div>${dh(ben, benY)}</div>
+    <div class="card"><div class="k">Tickets</div><div class="v">${vts.length}</div>${dh(vts.length, ticketsY)}</div>
     <div class="card"><div class="k">Valeur du stock</div><div class="v">${money(valStock)}</div></div>
     <div class="card"><div class="k">Produits</div><div class="v">${prods.filter(p => p.actif).length}</div></div>`;
   const alerts = prods.filter(p => p.actif && Number(p.stock) <= Number(p.stock_min));
@@ -505,6 +508,47 @@ ${r.ecart !== 0 ? "ECART A VERIFIER" : "Aucun ecart"}</pre></div>
   });
 }
 
+function renderSuggest() {
+  const box = $("#venteSuggest");
+  if (!box) return;
+  const f = (venteFilter || "").toLowerCase().trim();
+  if (!f) { hideSuggest(); return; }
+  const matches = DB.produits.filter(p => p.actif && Number(p.stock) > 0 && (p.nom.toLowerCase().includes(f) || (p.code || "").includes(f))).slice(0, 8);
+  if (!matches.length) { hideSuggest(); return; }
+  box.innerHTML = matches.map((p, i) => '<div class="sug-item ' + (i === 0 ? "on" : "") + '" data-pid="' + p.id + '"><span class="sug-name">' + esc(p.nom) + '</span><span class="sug-price">' + money(p.prix_vente) + '</span><span class="sug-stock">✓</span></div>').join("");
+  box.classList.remove("hidden");
+  box.querySelectorAll(".sug-item").forEach(it => it.addEventListener("mousedown", e => { e.preventDefault(); addSuggestion(it.dataset.pid); }));
+}
+function moveSuggest(items, dir) {
+  const cur = items.findIndex(it => it.classList.contains("on"));
+  let next = cur + dir;
+  if (next < 0) next = items.length - 1;
+  if (next >= items.length) next = 0;
+  items.forEach((it, i) => it.classList.toggle("on", i === next));
+}
+function hideSuggest() { const b = $("#venteSuggest"); if (b) b.classList.add("hidden"); }
+function addSuggestion(pid) {
+  addToCart(pid, 1);
+  const vs = $("#venteSearch"); if (vs) vs.value = "";
+  venteFilter = "";
+  hideSuggest();
+  renderVenteGrid();
+}
+function addLastMatch() {
+  const f = (venteFilter || "").toLowerCase();
+  const matches = DB.produits.filter(p => p.actif && Number(p.stock) > 0 && (!f || p.nom.toLowerCase().includes(f) || (p.code || "").includes(f)));
+  if (matches.length) {
+    const last = matches[matches.length - 1];
+    addToCart(last.id, 1);
+    toast("Ajouté : " + last.nom);
+    const vs = $("#venteSearch"); if (vs) vs.value = "";
+    venteFilter = "";
+    hideSuggest();
+    renderVenteGrid();
+  } else if (!addByCode(venteFilter)) {
+    toast("Produit introuvable : " + venteFilter);
+  }
+}
 function renderVenteGrid() {
   const f = venteFilter.toLowerCase();
   const fam = $("#venteFamille") ? $("#venteFamille").value : "";
@@ -525,7 +569,7 @@ function renderVenteGrid() {
       </div>`).join(""));
   $$("#venteGrid .prod-card").forEach(c => c.addEventListener("click", () => {
     const p = produitById(c.dataset.pid);
-    if (p && Number(p.stock) > 0) addToCart(p.id, 1); else toast("Stock insuffisant");
+    if (p && Number(p.stock) > 0) { addToCart(p.id, 1); c.classList.add("flash"); setTimeout(() => c.classList.remove("flash"), 350); } else toast("Stock insuffisant");
   }));
 }
 function addToCart(pid, qte) {
@@ -535,6 +579,8 @@ function addToCart(pid, qte) {
   if (now + qte > Number(p.stock)) { toast("Stock insuffisant"); return; }
   if (line) line.qte += qte; else cart.push({ produitId: p.id, nom: p.nom, prix: Number(p.prix_vente), prixAchat: Number(p.prix_achat), qte });
   renderCart();
+  const ct = $("#cartTotal");
+  if (ct) { ct.classList.add("pop"); setTimeout(() => ct.classList.remove("pop"), 300); }
 }
 function renderCart() {
   const wrap = $("#cartLines");
@@ -2499,8 +2545,15 @@ function bind() {
   if (document.getElementById("cartRecu")) document.getElementById("cartRecu").addEventListener("focus", function() { if (Number(this.value) === 0) this.value = ""; });
   if (document.getElementById("cartRecu")) document.getElementById("cartRecu").addEventListener("blur", function() { if (!this.value) { this.value = 0; } });
   if ($("#cartRecu")) $("#cartRecu").addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); encaisser(); } });
-  $("#venteSearch").addEventListener("input", e => { venteFilter = e.target.value; renderVenteGrid(); });
-  $("#venteSearch").addEventListener("keydown", e => { if (e.key === "Enter" && venteFilter) { const f = venteFilter.toLowerCase(); const matches = DB.produits.filter(p => p.actif && Number(p.stock) > 0 && (!f || p.nom.toLowerCase().includes(f) || (p.code || "").includes(f))); if (matches.length) { const last = matches[matches.length - 1]; addToCart(last.id, 1); toast("Ajouté : " + last.nom); $("#venteSearch").value = ""; venteFilter = ""; renderVenteGrid(); } else if (!addByCode(venteFilter)) { toast("Produit introuvable : " + venteFilter); } } });
+  $("#venteSearch").addEventListener("input", e => { venteFilter = e.target.value; renderVenteGrid(); renderSuggest(); });
+  $("#venteSearch").addEventListener("keydown", e => {
+    const items = $("#venteSuggest .sug-item");
+    if (e.key === "ArrowDown") { e.preventDefault(); moveSuggest(items, 1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); moveSuggest(items, -1); return; }
+    if (e.key === "Escape") { hideSuggest(); return; }
+    if (e.key === "Enter" && venteFilter) { e.preventDefault(); const hl = $("#venteSuggest .sug-item.on"); if (hl && hl.dataset.pid) addSuggestion(hl.dataset.pid); else addLastMatch(); }
+  });
+  document.addEventListener("click", e => { if (!e.target.closest("#venteSearch") && !e.target.closest("#venteSuggest")) hideSuggest(); });
   $("#venteFamille").addEventListener("change", renderVenteGrid);
   $("#venteSort").addEventListener("change", renderVenteGrid);
   $$("#view-rapports .chip-btn").forEach(b => b.addEventListener("click", () => {

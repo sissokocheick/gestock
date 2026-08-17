@@ -78,9 +78,12 @@
       <div id="caisseBar"></div>
       <div class="vente-layout">
         <div class="vente-left">
+          <div style="position:relative">
           <div class="row">
             <input id="venteSearch" class="grow" placeholder="🔎 Rechercher (nom, code-barres…) ou scanner">
             <button id="scanBtn" class="btn primary">📷 Scanner</button>
+          </div>
+          <div id="venteSuggest" class="suggest hidden"></div>
           </div>
           <div class="row" style="margin-top:6px">
             <select id="venteFamille"><option value="">Toutes les familles</option></select>
