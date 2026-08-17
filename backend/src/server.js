@@ -1037,7 +1037,7 @@ app.put("/api/caisse/:id/rouvrir", auth, need("R_POINT"), async (req, res) => {
 app.get("/api/stock/dormant", auth, need("R_STOCK"), async (req, res) => {
   const jours = Math.max(1, Number(req.query.jours || 30));
   const { rows } = await pool.query(
-    `SELECT p.id, p.nom, p.code, p.famille, f.nom AS famille_nom, p.stock, p.prix_achat,
+    `SELECT p.id, p.nom, p.code, f.nom AS famille_nom, p.stock, p.prix_achat,
             p.prix_vente, p.stock * p.prix_achat AS valeur_immobilisee,
             COALESCE(MAX(v.date), NULL) AS derniere_vente,
             COALESCE(SUM(vi.qte), 0) AS qte_vendue_periode,
