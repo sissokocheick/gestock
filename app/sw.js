@@ -1,4 +1,4 @@
-const CACHE = "gsv4";
+const CACHE = "gsv5";
 const PRECACHE = ["/", "/index.html", "/app.js", "/style.css", "/manifest.webmanifest", "/icons/icon.svg", "/js/JsBarcode.min.js"];
 
 self.addEventListener("install", e => {
@@ -28,16 +28,17 @@ self.addEventListener("fetch", e => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;
 
+  // Réseau d'abord : toujours la version à jour quand on est en ligne,
+  // repli sur le cache uniquement hors ligne.
   e.respondWith(
-    caches.open(CACHE).then(async c => {
-      const cached = await c.match(e.request);
-      const maj = fetch(e.request)
-        .then(r => {
-          if (r.ok) c.put(e.request, r.clone());
-          return r;
-        })
-        .catch(() => cached);
-      return cached || maj;
-    })
+    fetch(e.request)
+      .then(r => {
+        if (r.ok) {
+          const copy = r.clone();
+          caches.open(CACHE).then(c => c.put(e.request, copy));
+        }
+        return r;
+      })
+      .catch(() => caches.match(e.request))
   );
 });
