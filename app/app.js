@@ -389,9 +389,6 @@ function renderCaisseBar() {
     <div class="panel" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between">
       <div>
         <b style="color:var(--ok)">🟢 Caisse ouverte</b> depuis ${new Date(c.ouverte_le).toLocaleTimeString("fr-FR")}
-        · Fonds : ${money(c.fonds_initial)}
-        · Ventes : ${money(c.total)} (${c.tickets} ticket${c.tickets > 1 ? "s" : ""})
-        · 
       </div>
       <div class="row">
         <button class="btn small" id="caisseVersBtn">➕ Versement</button>
@@ -2436,7 +2433,7 @@ function bind() {
   if (document.getElementById("cartRecu")) document.getElementById("cartRecu").addEventListener("blur", function() { if (!this.value) { this.value = 0; renderCart(); } });
   if ($("#cartRecu")) $("#cartRecu").addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); encaisser(); } });
   $("#venteSearch").addEventListener("input", e => { venteFilter = e.target.value; renderVenteGrid(); });
-  $("#venteSearch").addEventListener("keydown", e => { if (e.key === "Enter" && venteFilter) { if (addByCode(venteFilter)) $("#venteSearch").value = ""; } });
+  $("#venteSearch").addEventListener("keydown", e => { if (e.key === "Enter" && venteFilter) { const f = venteFilter.toLowerCase(); const matches = DB.produits.filter(p => p.actif && Number(p.stock) > 0 && (!f || p.nom.toLowerCase().includes(f) || (p.code || "").includes(f))); if (matches.length) { const last = matches[matches.length - 1]; addToCart(last.id, 1); toast("Ajouté : " + last.nom); $("#venteSearch").value = ""; venteFilter = ""; renderVenteGrid(); } else if (!addByCode(venteFilter)) { toast("Produit introuvable : " + venteFilter); } } });
   $("#venteFamille").addEventListener("change", renderVenteGrid);
   $("#venteSort").addEventListener("change", renderVenteGrid);
   $$("#view-rapports .chip-btn").forEach(b => b.addEventListener("click", () => {
