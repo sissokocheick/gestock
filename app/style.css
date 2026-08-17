@@ -337,3 +337,8 @@ tr:hover td.sticky-l, tr:hover td.sticky-r { background: #f8fafc; }
 .stock-badge.low .dot{background:var(--amber)}
 .stock-badge.out{color:var(--danger)}
 .stock-badge.out .dot{background:var(--danger)}
+
+/* --- indicateur de connexion + cibles tactiles --- */
+.conn-dot{width:10px;height:10px;border-radius:50%;background:#22c55e;flex:none;transition:.2s}
+.conn-dot.off{background:#ef4444}
+.cart-line .qty button{width:38px;height:38px;font-size:16px}

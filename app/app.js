@@ -111,6 +111,8 @@ async function api(path, opts = {}) {
   return data;
 }
 window.addEventListener("online", () => replayQueue().catch(() => { }));
+window.addEventListener("online", () => setConn(true));
+window.addEventListener("offline", () => setConn(false));
 function hasRight(r) { if (!cur) return false; if (cur.role === "admin") return true; return (cur.droits || []).includes(r); }
 const modeInfo = code => (DB.modes || []).find(m => m.code === code);
 const modeLabel = code => { const m = modeInfo(code); return m ? m.nom : code; };
@@ -178,6 +180,10 @@ document.addEventListener("click", e => {
 });
 
 /* ---------- temps réel ---------- */
+function setConn(ok) {
+  const d = document.getElementById("connDot");
+  if (d) { d.classList.toggle("off", !ok); d.title = ok ? "Connecté" : "Hors ligne"; }
+}
 function connectWS() {
   if (!token) return;
   try { ws = new WebSocket(WS_URL); } catch (e) { return; }
@@ -190,7 +196,8 @@ function connectWS() {
   }
     } catch (err) { }
   };
-  ws.onclose = () => { ws = null; setTimeout(connectWS, 3000); };
+  ws.onopen = () => setConn(true);
+  ws.onclose = () => { ws = null; setConn(false); setTimeout(connectWS, 3000); };
 }
 
 /* ---------- connexion ---------- */
@@ -307,6 +314,24 @@ renderers.accueil = async function () {
   const k = todayKey();
   const [vts, prods] = await Promise.all([api("/ventes?date=" + k), api("/produits")]);
   DB.produits = prods;
+  const da = $("#dashActions");
+  if (da) {
+    const acts = [];
+    acts.push('<button class="btn primary" data-go="vente">🛒 Caisse</button>');
+    if (hasRight("R_PRODUITS")) acts.push('<button class="btn" data-np>➕ Nouveau produit</button>');
+    if (hasRight("R_STOCK")) acts.push('<button class="btn" data-go="stock">📦 Stock</button>');
+    if (hasRight("R_RAPPORTS") || hasRight("R_POINT")) acts.push('<button class="btn" data-go="versements">💰 Versements</button>');
+    da.innerHTML = acts.join("");
+    da.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => {
+      const v = b.dataset.go;
+      if (v === "versements") {
+        go("params");
+        setTimeout(() => { const t = document.querySelector('[data-ptab="versements"]'); if (t) t.click(); }, 60);
+      } else go(v);
+    }));
+    const npb = da.querySelector("[data-np]");
+    if (npb) npb.addEventListener("click", () => prodForm(null));
+  }
   // Les caissières ne voient aucune information de gestion
   if (!hasRight("R_RAPPORTS")) {
     const mine = vts.filter(v => String(v.user_id) === String(cur.id));
@@ -330,7 +355,8 @@ renderers.accueil = async function () {
   $("#dashAlerts").innerHTML = alerts.length === 0
     ? `<div class="empty">✅ Aucune alerte stock aujourd'hui</div>`
     : `<div class="table-wrap"><table><tr><th>Produit</th><th>Stock</th><th>Seuil mini</th><th>Statut</th></tr>` +
-      alerts.map(p => `<tr><td>${esc(p.nom)}</td><td class="num">${p.stock}</td><td class="num">${p.stock_min}</td><td><span class="badge ${Number(p.stock) <= 0 ? "bad" : "warn"}">${Number(p.stock) <= 0 ? "Rupture" : "Stock bas"}</span></td></tr>`).join("") + `</table></div>`;
+      alerts.map(p => `<tr data-prodid="${p.id}" style="cursor:pointer" title="Cliquer pour modifier"><td>${esc(p.nom)}</td><td class="num">${p.stock}</td><td class="num">${p.stock_min}</td><td><span class="badge ${Number(p.stock) <= 0 ? "bad" : "warn"}">${Number(p.stock) <= 0 ? "Rupture" : "Stock bas"}</span></td></tr>`).join("") + `</table></div>`;
+  $("#dashAlerts tr[data-prodid]").forEach(r => r.addEventListener("click", () => { const p = prods.find(x => String(x.id) === String(r.dataset.prodid)); if (p) prodForm(p); }));
   const q = {};
   vts.forEach(v => (v.items || []).forEach(i => { q[i.nom] = (q[i.nom] || 0) + Number(i.qte); }));
   const top = Object.entries(q).sort((a, b) => b[1] - a[1]).slice(0, 5);
