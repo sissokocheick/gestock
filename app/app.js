@@ -264,7 +264,7 @@ function applyBrand() {
 function buildNav() {
   $$("#sideNav .nav-link").forEach(a => {
     const r = a.dataset.right;
-    a.classList.toggle("hidden", r && !hasRight(r));
+    a.classList.toggle("hidden", !!(r && !hasRight(r)));
   });
   // L'accueil (Tableau de bord) reste toujours visible dans le menu
   const acc = document.querySelector('#sideNav a[data-view="accueil"]');

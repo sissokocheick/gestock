@@ -163,7 +163,7 @@ kbd{background:var(--btn-bg);border-radius:5px;padding:1px 6px;font-size:12px}
   .modal-card .row{flex-wrap:wrap}
   .modal-card .row .field{flex:1 1 100%}
   .btn.small{padding:8px 12px}
-  .sidenav{top:auto;bottom:0;left:0;right:0;width:auto;height:58px;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:1px;overflow-x:auto;border-right:0;border-top:1px solid var(--border);padding:6px 2px}
+  .sidenav{top:auto;bottom:0;left:0;right:0;width:auto;height:58px;display:flex;gap:1px;overflow-x:auto;border-right:0;border-top:1px solid var(--border);padding:6px 2px}
   .nav-link{flex-direction:column;gap:0;font-size:9.5px;padding:3px 2px;flex:1 1 0;min-width:0;overflow:hidden}
   .nav-link.active{background:var(--primary)}
   .main{margin-left:0;padding:12px 12px 80px}
@@ -261,7 +261,7 @@ tr:hover td.sticky-l, tr:hover td.sticky-r { background: var(--thead); }
   .sidenav { height: 64px; padding: 5px 4px calc(5px + env(safe-area-inset-bottom)); }
   .nav-link { font-size: 10px; padding: 3px 2px; }
 .nav-link svg { width: 16px; height: 16px; }
-.nav-label { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+.nav-label { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
   .nav-link.active { position: relative; }
   .nav-link.active::before { content: ""; position: absolute; top: 0; left: 14%; right: 14%; height: 3px; border-radius: 0 0 3px 3px; background: #fff; opacity: 0.9; }
   .main { padding: 12px 12px calc(86px + env(safe-area-inset-bottom)); }
