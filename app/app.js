@@ -566,6 +566,7 @@ async function encaisser() {
       cart = []; $("#cartRemise").value = 0; $("#cartRecu").value = 0;
       renderCart();
       showTicket(v);
+      try { localStorage.setItem("gs_last_ticket", JSON.stringify(v)); } catch(e) {}
       renderers.vente().catch(() => { });
     } catch (e) { toast(e.message); }
     btn.disabled = false; btn.textContent = "💵 Encaisser";
@@ -2345,7 +2346,7 @@ function bind() {
     else { $("#rapFrom").value = f(new Date(d.getFullYear(), d.getMonth(), 1)); $("#rapTo").value = f(d); }
     genRapport().catch(e => toast(e.message));
   }));
-  document.addEventListener("keydown", function(e) {
+document.addEventListener("keydown", function(e) {
     var tag = (e.target.tagName || "").toLowerCase();
     var typing = tag === "input" || tag === "select" || tag === "textarea";
     if (typing && !e.key.startsWith("F") && e.key !== "Escape") return;
@@ -2353,15 +2354,41 @@ function bind() {
       if (e.key === "F3") { e.preventDefault(); var lq = document.querySelector("#cartLines .qty input:last-child"); if (lq) { lq.focus(); lq.select(); } return; }
       if (e.key === "F4") { e.preventDefault(); var r = document.getElementById("cartRemise"); if (r) { r.focus(); r.select(); } return; }
       if (e.key === "F5") { e.preventDefault(); e.stopImmediatePropagation(); var m = document.getElementById("cartMode"); if (m) { m.selectedIndex = (m.selectedIndex + 1) % m.options.length; renderCart(); } return; }
-      if (e.key === "F6") { e.preventDefault(); toast("Vente suspendue (a venir)"); return; }
-      if (e.key === "F7") { e.preventDefault(); if (cart.length) { cart.pop(); renderCart(); toast("Dernier article retire"); } return; }
+      if (e.key === "F6") {
+        e.preventDefault();
+        var suspended = JSON.parse(localStorage.getItem("gs_suspended") || "[]");
+        if (cart.length > 0) {
+          suspended.push({ items: cart, date: new Date().toISOString(), mode: ($("#cartMode") || {}).value || "especes", remise: ($("#cartRemise") || {}).value || 0 });
+          localStorage.setItem("gs_suspended", JSON.stringify(suspended));
+          cart = []; renderCart();
+          toast("Vente suspendue (" + suspended.length + " en attente)");
+        } else if (suspended.length > 0) {
+          var last = suspended.pop();
+          localStorage.setItem("gs_suspended", JSON.stringify(suspended));
+          cart = last.items || [];
+          if ($("#cartMode")) $("#cartMode").value = last.mode || "especes";
+          if ($("#cartRemise")) $("#cartRemise").value = last.remise || 0;
+          renderCart();
+          toast("Vente reprise (" + suspended.length + " encore en attente)");
+        } else { toast("Aucune vente suspendue"); }
+        return;
+      }
+      if (e.key === "F7") { e.preventDefault(); if (cart.length) { cart.pop(); renderCart(); toast("Dernier article retiré"); } return; }
       if (e.key === "F8") { e.preventDefault(); var vs = document.getElementById("venteSearch"); if (vs) { vs.focus(); vs.select(); } return; }
       if (e.key === "F9") { e.preventDefault(); encaisser(); return; }
-      if (e.key === "F10") { e.preventDefault(); toast("Reimpression (a venir)"); return; }
+      if (e.key === "F10") {
+        e.preventDefault();
+        var lastTicket = localStorage.getItem("gs_last_ticket");
+        if (!lastTicket) { toast("Aucun ticket à réimprimer"); return; }
+        try { var v = JSON.parse(lastTicket); showTicket(v); toast("Réimpression du ticket " + v.numero); }
+        catch (err) { toast("Erreur de réimpression"); }
+        return;
+      }
       if (e.key === "Escape" && !document.querySelector("#modal:not(.hidden)")) { if (cart.length) { askConfirm("Vider le panier", "Retirer tous les articles du panier ?", function() { cart = []; renderCart(); }, { danger: true, okLabel: "Vider" }); } return; }
     }
     if (e.key === "F2") { e.preventDefault(); var s = document.getElementById("venteSearch") || document.getElementById("prodSearch"); if (s) { s.focus(); s.select(); } return; }
   });
+  
   document.addEventListener("keydown", e => {
     if (e.key === "F2") { e.preventDefault(); if ($("#view-vente").classList.contains("active")) $("#venteSearch").focus(); }
     if (e.key === "F9") { e.preventDefault(); if ($("#view-vente").classList.contains("active") && !$("#encaisserBtn").disabled) encaisser(); }
