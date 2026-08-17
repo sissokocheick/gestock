@@ -2530,6 +2530,14 @@ function bind() {
   $("#loginPass").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
   $("#loginUser").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
   $("#logoutBtn").addEventListener("click", doLogout);
+  const gs = $("#globalSearch");
+  if (gs) {
+    gs.addEventListener("input", e => globalSearch(e.target.value));
+    gs.addEventListener("keydown", e => { if (e.key === "Escape") { hideGlobal(true); gs.blur(); } });
+  }
+  document.addEventListener("click", e => { if (!e.target.closest("#globalSearch") && !e.target.closest("#globalResults")) hideGlobal(false); });
+  const themeBtn = $("#themeBtn");
+  if (themeBtn) themeBtn.addEventListener("click", toggleTheme);
   const refreshBtn = $("#refreshBtn");
   if (refreshBtn) refreshBtn.addEventListener("click", () => { if (curView && renderers[curView]) { viewLoading(curView); renderers[curView]().catch(e => { const msg = String((e && e.message) || e); if (/injoignable|hors ligne|Failed to fetch|network/i.test(msg)) viewErreurReseau(curView); else toast(e.message || "Erreur"); }); } });
   $$("#sideNav .nav-link").forEach(a => {
@@ -2681,6 +2689,71 @@ async function init() {
   }
   $("#login").classList.remove("hidden");
 }
+function ensureGlobalData() {
+  const jobs = [];
+  if (!DB.produits || !DB.produits.length) jobs.push(api("/produits").then(p => DB.produits = p).catch(() => {}));
+  if (!DB.familles || !DB.familles.length) jobs.push(api("/familles").then(f => DB.familles = f).catch(() => {}));
+  if (!DB.fournisseurs || !DB.fournisseurs.length) jobs.push(api("/fournisseurs").then(f => DB.fournisseurs = f).catch(() => {}));
+  return Promise.all(jobs);
+}
+function renderGlobal(q) {
+  const box = $("#globalResults");
+  if (!box) return;
+  const f = (q || "").toLowerCase().trim();
+  if (f.length < 2) { box.classList.add("hidden"); return; }
+  const prods = (DB.produits || []).filter(p => p.actif && (p.nom.toLowerCase().includes(f) || (p.code || "").includes(f))).slice(0, 6);
+  const fams = (DB.familles || []).filter(x => (x.nom || "").toLowerCase().includes(f)).slice(0, 3);
+  const fours = (DB.fournisseurs || []).filter(x => (x.nom || "").toLowerCase().includes(f)).slice(0, 3);
+  if (!prods.length && !fams.length && !fours.length) {
+    box.innerHTML = '<div class="gs-empty">Aucun résultat</div>';
+    box.classList.remove("hidden");
+    return;
+  }
+  let html = "";
+  if (prods.length) html += '<div class="gs-group">Produits</div>' + prods.map(p => '<div class="gs-item" data-kind="prod" data-id="' + p.id + '"><span class="gs-name">' + esc(p.nom) + '</span><span class="gs-sub">' + money(p.prix_vente) + '</span></div>').join("");
+  if (fams.length) html += '<div class="gs-group">Familles</div>' + fams.map(x => '<div class="gs-item" data-kind="fam" data-id="' + x.id + '"><span class="gs-name">' + esc(x.nom) + '</span></div>').join("");
+  if (fours.length) html += '<div class="gs-group">Fournisseurs</div>' + fours.map(x => '<div class="gs-item" data-kind="four" data-id="' + x.id + '"><span class="gs-name">' + esc(x.nom) + '</span></div>').join("");
+  box.innerHTML = html;
+  box.classList.remove("hidden");
+  box.querySelectorAll(".gs-item").forEach(it => it.addEventListener("mousedown", e => { e.preventDefault(); pickGlobal(it); }));
+}
+function pickGlobal(it) {
+  const kind = it.dataset.kind, id = it.dataset.id;
+  hideGlobal(true);
+  if (kind === "prod") {
+    const p = produitById(id);
+    if (p && hasRight("R_PRODUITS")) prodForm(p);
+    else go("produits");
+  } else if (kind === "fam") {
+    go("produits");
+  } else if (kind === "four") {
+    go("stock");
+  }
+}
+function hideGlobal(clear) {
+  const b = $("#globalResults"); if (b) b.classList.add("hidden");
+  if (clear) { const g = $("#globalSearch"); if (g) g.value = ""; }
+}
+function globalSearch(q) {
+  ensureGlobalData().then(() => renderGlobal(q)).catch(() => {});
+}
+
+function initTheme() {
+  try {
+    const t = localStorage.getItem("gs_theme") || "light";
+    document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+  const b = document.getElementById("themeBtn");
+  if (b) b.textContent = document.documentElement.getAttribute("data-theme") === "dark" ? "☀️" : "🌙";
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", cur);
+  try { localStorage.setItem("gs_theme", cur); } catch (e) {}
+  const b = document.getElementById("themeBtn");
+  if (b) b.textContent = cur === "dark" ? "☀️" : "🌙";
+}
+initTheme();
 init();
 
 /* Module Stock avance */
