@@ -293,7 +293,7 @@ function go(view) {
 }
 
 /* ---------- chargement & erreur réseau ---------- */
-const VIEW_BOX = { accueil: "#dashCards", vente: "#venteGrid", releve: "#releveBox", produits: "#prodWrap", stock: "#stockWrap", point: "#pointBox", users: "#usersWrap", rapports: "#rapportBox", journal: "#journalWrap", params: "#paramsBox", stockmod: "#stockmodBox", dormant: "#dormantBox", depenses: "#depensesBox", abc: "#abcBox" };
+const VIEW_BOX = { accueil: "#dashCards", vente: "#venteGrid", releve: "#releveBox", produits: "#prodWrap", stock: "#stockWrap", point: "#pointBox", users: "#usersWrap", rapports: "#rapportBox", journal: "#journalWrap", params: "#paramsBox", stockmod: "#stockmodBox", dormant: "#dormantBox", depenses: "#depensesBox", abc: "#abcBox", versements: "#versementBox" };
 function viewLoading(view) {
   const sel = VIEW_BOX[view];
   if (sel) { const el = $(sel); if (el) el.innerHTML = `<div class="empty">⏳ Chargement…</div>`; }
@@ -326,11 +326,7 @@ renderers.accueil = async function () {
     if (hasRight("R_RAPPORTS") || hasRight("R_POINT")) acts.push('<button class="btn" data-go="versements">💰 Versements</button>');
     da.innerHTML = acts.join("");
     da.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => {
-      const v = b.dataset.go;
-      if (v === "versements") {
-        go("params");
-        setTimeout(() => { const t = document.querySelector('[data-ptab="versements"]'); if (t) t.click(); }, 60);
-      } else go(v);
+      go(b.dataset.go);
     }));
     const npb = da.querySelector("[data-np]");
     if (npb) npb.addEventListener("click", () => prodForm(null));
@@ -2461,9 +2457,7 @@ async function checkNotifVersements() {
     const r = await api("/versements/en-attente");
     notifCount = (r.rows || []).length;
     const badge = document.getElementById("notifBadge");
-    const badgeTab = document.getElementById("notifBadgeTab");
     if (badge) { badge.textContent = notifCount; badge.classList.toggle("hidden", notifCount === 0); }
-    if (badgeTab) { badgeTab.textContent = notifCount; badgeTab.classList.toggle("hidden", notifCount === 0); }
   } catch (e) { /* silent */ }
 }
 function renderVersementsAttente() {
@@ -2503,6 +2497,33 @@ function renderVersementsAttente() {
     });
   }).catch(function(e) { toast(e.message); });
 }
+function renderVersementsTraites(statut, boxId) {
+  api("/versements").then(function(r) {
+    const box = document.getElementById(boxId);
+    if (!box) return;
+    const rows = (r.rows || []).filter(function(v) { return v.statut === statut; });
+    const estValide = statut === "valide";
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty">Aucun versement ' + (estValide ? "accepté" : "refusé") + '</div>';
+      return;
+    }
+    box.innerHTML = '<p class="muted" style="margin:0 0 8px">' + rows.length + ' versement(s) ' + (estValide ? "accepté(s)" : "refusé(s)") + '</p>'
+      + '<div class="table-wrap"><table><tr><th>Caissière</th><th class="num">Montant</th><th>Mode</th><th>Motif</th><th>Date</th>'
+      + (estValide ? '' : '<th>Motif de refus</th>') + '<th>Par</th></tr>'
+      + rows.map(function(v) {
+        return '<tr><td>' + esc(v.caissiere_nom) + '</td><td class="num"><b>' + money(v.montant) + '</b></td>'
+          + '<td>' + esc(v.mode) + '</td><td>' + esc(v.motif || '') + '</td>'
+          + '<td>' + fmtDate(v.date) + '</td>'
+          + (estValide ? '' : '<td>' + esc(v.motif_refus || '') + '</td>')
+          + '<td>' + esc(v.valide_par_nom || '') + '</td></tr>';
+      }).join('') + '</table></div>';
+  }).catch(function(e) { toast(e.message); });
+}
+renderers.versements = async function () {
+  renderVersementsAttente();
+  renderVersementsTraites("valide", "versementValidesBox");
+  renderVersementsTraites("refuse", "versementRefusesBox");
+};
 function renderVersementConfig() {
   const loadUsers = !DB.users || !DB.users.length ? api("/users").then(function(u) { DB.users = u; }).catch(function() {}) : Promise.resolve();
   loadUsers.then(function() {
@@ -2640,13 +2661,20 @@ document.addEventListener("keydown", function(e) {
   $("#roleManagerBtn").addEventListener("click", roleManager);
   $("#rapGenBtn").addEventListener("click", () => genRapport().catch(e => toast(e.message)));
   // Param sub-tabs
+  document.querySelectorAll("[data-vtab]").forEach(b => b.addEventListener("click", () => {
+    document.querySelectorAll("[data-vtab]").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    document.querySelectorAll("#view-versements .ptab").forEach(p => p.classList.add("hidden"));
+    const target = document.getElementById("vtab-" + b.dataset.vtab);
+    if (target) target.classList.remove("hidden");
+  }));
   document.querySelectorAll("[data-ptab]").forEach(b => b.addEventListener("click", () => {
     document.querySelectorAll("[data-ptab]").forEach(x => x.classList.remove("on"));
     b.classList.add("on");
     document.querySelectorAll(".ptab").forEach(p => p.classList.add("hidden"));
     const target = document.getElementById("ptab-" + b.dataset.ptab);
     if (target) target.classList.remove("hidden");
-    if (b.dataset.ptab === "versements") { renderVersementsAttente(); renderVersementConfig(); }
+    if (b.dataset.ptab === "versements") { renderVersementConfig(); }
     if (b.dataset.ptab === "journal") renderers.journal().catch(() => {});
     if (b.dataset.ptab === "personnel") renderers.users().catch(() => {});
     if (b.dataset.ptab === "boutique") renderers.params().catch(() => {});

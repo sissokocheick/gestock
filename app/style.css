@@ -288,7 +288,7 @@ tr:hover td.sticky-l, tr:hover td.sticky-r { background: var(--thead); }
 .tab.on{background:var(--primary);border-color:var(--primary);color:#fff}
 
 /* --- pagination 10/50/100 --- */
-.pg-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0;padding:8px 10px;background:rgba(15,23,42,.045);border:1px solid var(--border);border-radius:12px}
+.pg-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0;padding:8px 10px;background:var(--thead);border:1px solid var(--border);border-radius:12px}
 .pg-bar .muted{font-size:12px}
 .pg-bar select{width:auto;padding:6px 8px;font-size:13px;border-radius:8px;background:var(--panel)}
 .pg-bar .btn{padding:6px 12px;font-size:12px}

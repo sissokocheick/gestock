@@ -15,20 +15,20 @@ window.AppStock = (function () {
   if (!styleInjected && typeof document !== "undefined") {
     const st = document.createElement("style");
     st.textContent = `
-      .stk-card{background:#fff;border:1px solid #dde3ea;border-radius:10px;padding:14px;margin-bottom:14px}
+      .stk-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px}
       .stk-card h3{margin:0 0 10px;font-size:15px}
       .stk-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px}
-      .stk-card label{display:block;font-size:12px;color:#5b6b7b;margin:8px 0 3px}
-      .stk-card input,.stk-card select{width:100%;padding:8px;border:1px solid #dde3ea;border-radius:6px;font-size:13px;background:#fff;box-sizing:border-box}
-      .stk-btn{background:#0e7c5a;color:#fff;border:0;padding:8px 13px;border-radius:8px;cursor:pointer;font-size:13px;margin-top:10px}
-      .stk-btn.danger{background:#b3261e;color:#fff}
+      .stk-card label{display:block;font-size:12px;color:var(--muted);margin:8px 0 3px}
+      .stk-card input,.stk-card select{width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--input-bg);color:var(--ink);box-sizing:border-box}
+      .stk-btn{background:var(--success);color:#fff;border:0;padding:8px 13px;border-radius:8px;cursor:pointer;font-size:13px;margin-top:10px}
+      .stk-btn.danger{background:var(--danger);color:#fff}
       .stk-table{width:100%;border-collapse:collapse;font-size:13px}
-      .stk-table th,.stk-table td{text-align:left;padding:7px 8px;border-bottom:1px solid #dde3ea;vertical-align:top}
-      .stk-table th{color:#5b6b7b;font-weight:600;font-size:12px}
+      .stk-table th,.stk-table td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+      .stk-table th{color:var(--muted);font-weight:600;font-size:12px}
       .stk-pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
-      .stk-ok{background:#d9f2e6;color:#0e7c5a}.stk-bad{background:#fbe0de;color:#b3261e}.stk-warn{background:#fdf0d0;color:#8a5a00}
-      .stk-mut{color:#5b6b7b;font-size:12px}
-      .stk-empty{color:#5b6b7b;padding:10px 0}
+      .stk-ok{background:rgba(21,128,61,.15);color:var(--success)}.stk-bad{background:rgba(185,28,28,.15);color:var(--danger)}.stk-warn{background:rgba(180,83,9,.15);color:var(--amber)}
+      .stk-mut{color:var(--muted);font-size:12px}
+      .stk-empty{color:var(--muted);padding:10px 0}
     `;
     document.head.appendChild(st);
     styleInjected = true;

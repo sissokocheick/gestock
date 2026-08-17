@@ -1193,6 +1193,18 @@ app.post("/api/versements/:id/refuser", auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+/* ---------- LISTE DES VERSEMENTS (tous statuts) ---------- */
+app.get("/api/versements", auth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT vc.*, u.nom AS caissiere_nom, v.nom AS valide_par_nom
+     FROM versements_caisse vc
+     JOIN caisses c ON c.id = vc.caisse_id
+     JOIN users u ON u.id = c.user_id
+     LEFT JOIN users v ON v.id = vc.valide_par
+     ORDER BY vc.date DESC`);
+  res.json({ rows });
+});
+
 /* ---------- démarrage ---------- */
 /* ---------- Module Stock avanc� (magasins, services, bons FEFO, inventaires, r�appro) ---------- */
 require("./module-stock")({ app, auth, need, broadcast });
