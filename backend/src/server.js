@@ -242,9 +242,13 @@ app.post("/api/produits", auth, need("R_PRODUITS"), async (req, res) => {
       else famId = (await c.query("INSERT INTO familles(nom) VALUES($1) RETURNING id", [p.famille])).rows[0].id;
     }
     const { rows: [refRow] } = await c.query("SELECT 'PRD-' || lpad(nextval('produits_id_seq')::text, 6, '0') AS ref");
+    if (p.code && String(p.code).trim()) {
+      const { rows: [dup] } = await c.query("SELECT nom FROM produits WHERE lower(code)=lower($1) LIMIT 1", [String(p.code).trim()]);
+      if (dup) throw Object.assign(new Error("Ce code-barres est déjà utilisé par « " + dup.nom + " »"), { status: 400 });
+    }
     const { rows } = await c.query(
       `INSERT INTO produits(nom, famille_id, code, photo, prix_achat, prix_vente, stock, stock_min, actif, gere_par_lot, reference)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [p.nom.trim(), famId, p.code || null, p.photo || null, Number(p.prix_achat) || 0, Number(p.prix_vente) || 0,
        Number(p.stock) || 0, Number(p.stock_min) || 0, p.actif !== false, gereLot, refRow.ref]);
     const id = rows[0].id;
@@ -258,12 +262,18 @@ app.post("/api/produits", auth, need("R_PRODUITS"), async (req, res) => {
 });
 app.put("/api/produits/:id", auth, need("R_PRODUITS"), async (req, res) => {
   const p = req.body;
-  const r = await tx(req.user.id, c => c.query(
-    `UPDATE produits SET nom=$1, code=$2, photo=$3, prix_achat=$4, prix_vente=$5, stock_min=$6, actif=$7, gere_par_lot=$8
-     WHERE id=$9 RETURNING *`,
-    [p.nom, p.code || null, p.photo || null, Number(p.prix_achat) || 0, Number(p.prix_vente) || 0, Number(p.stock_min) || 0, p.actif !== false, p.gere_par_lot === true, req.params.id]));
+  const r = await tx(req.user.id, async c => {
+    if (p.code && String(p.code).trim()) {
+      const { rows: [dup] } = await c.query("SELECT nom FROM produits WHERE lower(code)=lower($1) AND id<>$2 LIMIT 1", [String(p.code).trim(), Number(req.params.id)]);
+      if (dup) throw Object.assign(new Error("Ce code-barres est déjà utilisé par « " + dup.nom + " »"), { status: 400 });
+    }
+    return (await c.query(
+      `UPDATE produits SET nom=$1, code=$2, photo=$3, prix_achat=$4, prix_vente=$5, stock_min=$6, actif=$7, gere_par_lot=$8
+       WHERE id=$9 RETURNING *`,
+      [p.nom, p.code || null, p.photo || null, Number(p.prix_achat) || 0, Number(p.prix_vente) || 0, Number(p.stock_min) || 0, p.actif !== false, p.gere_par_lot === true, req.params.id])).rows[0];
+  });
   broadcast({ type: "produits" });
-  res.json(r.rows[0]);
+  res.json(r);
 });
 app.post("/api/produits/:id/stock", auth, need("R_STOCK"), async (req, res) => {
   if (!stockAutorise(req.user)) return res.status(403).json({ error: "Ajustements et entrées réservés à la gérance et aux responsables stock" });

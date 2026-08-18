@@ -906,7 +906,7 @@ renderers.releve = async function () {
   const ca = vts.reduce((s, v) => s + Number(v.net), 0);
   const modeCards = Object.keys(byMode).map(code => `<div class="card"><div class="k">${esc(modeLabel(code))}</div><div class="v">${money(byMode[code])}</div></div>`).join("");
   $("#releveBox").innerHTML = `
-    <p class="muted">Lecture seule - votre relevé du ${new Date().toLocaleDateString("fr-FR")}</p>
+    <div class="row wrap" style="margin-bottom:8px"><p class="muted grow" style="margin:0">Lecture seule - votre relevé du ${new Date().toLocaleDateString("fr-FR")}</p><button class="btn small" id="releveExport" title="Exporter en CSV">⬇️ CSV</button></div>
     <div class="cards">
       <div class="card"><div class="k">Mes ventes</div><div class="v">${money(ca)}</div></div>
       ${modeCards}
@@ -918,6 +918,10 @@ renderers.releve = async function () {
     (vts.length === 0 ? `<tr><td colspan="5" class="empty">Aucune vente aujourd'hui</td></tr>` :
       pgSlice("releve", vts).part.map(v => `<tr><td>${v.numero}</td><td>${fmtDate(v.date)}</td><td class="num">${(v.items || []).reduce((s, i) => s + Number(i.qte), 0)}</td><td class="num">${money(v.net)}</td><td>${esc(modeLabel(v.mode))}</td></tr>`).join("")) +
     `</table></div>`;
+  const expBtn = $("#releveExport");
+  if (expBtn) expBtn.addEventListener("click", () => {
+    downloadCSV("releve-" + todayKey() + ".csv", [["Ticket","Heure","Articles","Total","Paiement"]].concat(vts.map(v => [v.numero, fmtDate(v.date), String((v.items || []).reduce((s, i) => s + Number(i.qte), 0)), String(v.net), modeLabel(v.mode)])));
+  });
 };
 
 /* ---------- produits ---------- */
@@ -1861,10 +1865,17 @@ async function renderPointClass() {
 renderers.users = async function () {
   let users = [];
   try { users = await api("/users"); DB.users = users; } catch (e) { toast(e.message); return; }
-  $("#usersWrap").innerHTML = (users.length > 0 ? pgBar("users", users.length, "utilisateur(s)") : "") + `
+  renderUsers();
+};
+function renderUsers() {
+  const users = DB.users || [];
+  const f = String($("#usersSearch") ? $("#usersSearch").value : "").toLowerCase().trim();
+  const list = f ? users.filter(u => (u.nom || "").toLowerCase().indexOf(f) >= 0 || (roleLabel(u.role_code) || "").toLowerCase().indexOf(f) >= 0) : users;
+  $("#usersWrap").innerHTML = `<div class="row wrap" style="margin-bottom:8px"><input id="usersSearch" class="grow" placeholder="🔎 Rechercher un membre du personnel…" value="${esc(f)}"></div>`
+    + (list.length > 0 ? pgBar("users", list.length, "utilisateur(s)") : "") + `
     <div class="table-wrap"><table>
     <tr><th>Nom</th><th>Rôle</th><th>Droits</th><th>Statut</th><th>Dernière connexion</th><th>Actions</th></tr>
-    ${pgSlice("users", users).part.map(u => `<tr>
+    ${list.map(u => `<tr>
       <td>${esc(u.nom)}</td>
       <td>${roleLabel(u.role_code)}</td>
       <td>${(u.droits || []).length} droit(s)</td>
@@ -1876,6 +1887,8 @@ renderers.users = async function () {
       </div></td></tr>`).join("")}
   </table></div>
   <p class="muted" style="margin-top:8px">💡 Les accès de chaque utilisateur suivent automatiquement son rôle. Pour modifier les accès d'un rôle, utilisez « Gérer les rôles ». Un utilisateur désactivé ne peut plus se connecter, mais son historique est conservé.</p>`;
+  const sBtn = $("#usersSearch");
+  if (sBtn) sBtn.addEventListener("input", () => renderUsers());
   $$("#usersWrap [data-edit]").forEach(b => b.addEventListener("click", () => userForm(users.find(u => String(u.id) === String(b.dataset.edit)))));
   $$("#usersWrap [data-toggle]").forEach(b => b.addEventListener("click", async () => {
     const u = users.find(x => String(x.id) === String(b.dataset.toggle));
@@ -1889,7 +1902,8 @@ renderers.users = async function () {
       } catch (e) { toast(e.message); }
     }, { danger: u.actif, okLabel: u.actif ? "Désactiver" : "Réactiver" });
   }));
-};
+}
+
 function userForm(u) {
   const isNew = !u;
   u = u || { nom: "", mdp: "", role_code: "caissier", droits: [], actif: true };
@@ -2009,28 +2023,54 @@ renderers.dormant = async function (box) {
 };
 
 /* ---------- DEPENSES ---------- */
+function downloadCSV(filename, rows) {
+  const csv = rows.map(function(r) { return r.map(function(c) { return '"' + String(c == null ? "" : c).replace(/"/g, '""') + '"'; }).join(";"); }).join("\r\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function() { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+}
 renderers.depenses = async function () {
   var rows = [];
   try { rows = await api("/depenses"); } catch (e) { toast(e.message); return; }
-  var total = rows.reduce(function(s, r) { return s + Number(r.montant); }, 0);
-  var cats = ["Loyer","Electricite","Eau","Transport","Salaires","Courses boutique","Materiel","Maintenance","Communication","Autre"];
-  $("#depensesBox").innerHTML = '<div class="row wrap" style="margin-bottom:10px"><h2 class="grow" style="margin:0">Depenses</h2>'
-    + '<button class="btn primary" id="depAdd">+ Nouvelle depense</button></div>'
-    + (rows.length === 0 ? '<div class="empty">Aucune depense enregistree</div>'
-    : '<p class="muted" style="margin:0 0 8px">Total : <b>' + money(total) + '</b> — ' + rows.length + ' depense(s)</p>'
-    + '<div class="table-wrap"><table><tr><th>Date</th><th>Categorie</th><th>Motif</th><th>Mode</th><th class="num">Montant</th><th>Par</th><th></th></tr>'
-    + rows.map(function(r) { return '<tr><td>' + fmtDate(r.date) + '</td><td><span class="badge info">' + esc(r.categorie) + '</span></td>'
+  DB.depenses = rows;
+  renderDepenses();
+};
+function renderDepenses() {
+  var rows = DB.depenses || [];
+  var catsFull = ["Loyer","Electricite","Eau","Transport","Salaires","Courses boutique","Materiel","Maintenance","Communication","Autre"];
+  var f = String($("#depSearch") ? $("#depSearch").value : "").toLowerCase().trim();
+  var filtered = f ? rows.filter(function(r) {
+    return (r.motif || "").toLowerCase().indexOf(f) >= 0 || (r.categorie || "").toLowerCase().indexOf(f) >= 0
+      || (r.mode || "").toLowerCase().indexOf(f) >= 0 || (r.user_nom || "").toLowerCase().indexOf(f) >= 0;
+  }) : rows;
+  var total = filtered.reduce(function(s, r) { return s + Number(r.montant); }, 0);
+  var byCat = {};
+  rows.forEach(function(r) { byCat[r.categorie] = (byCat[r.categorie] || 0) + Number(r.montant); });
+  var catsHTML = Object.keys(byCat).sort(function(a, b) { return byCat[b] - byCat[a]; }).map(function(c) { return '<span class="badge info">' + esc(c) + ' : ' + money(byCat[c]) + '</span>'; }).join(" ");
+  $("#depensesBox").innerHTML = '<div class="row wrap" style="margin-bottom:10px"><h2 class="grow" style="margin:0">Dépenses</h2>'
+    + '<button class="btn small" id="depExport" title="Exporter en CSV">⬇️ CSV</button>'
+    + '<button class="btn primary" id="depAdd">+ Nouvelle dépense</button></div>'
+    + '<input id="depSearch" class="grow" placeholder="🔎 Rechercher (motif, catégorie, mode…)" value="' + esc(f) + '" style="margin-bottom:8px">'
+    + (rows.length === 0 ? '<div class="empty">Aucune dépense enregistrée</div>'
+    : '<div class="row wrap" style="margin-bottom:6px;gap:4px">' + catsHTML + '</div>'
+    + '<p class="muted" style="margin:0 0 8px">Total' + (f ? ' (filtré)' : '') + ' : <b>' + money(total) + '</b> — ' + filtered.length + ' dépense(s)</p>'
+    + '<div class="table-wrap"><table><tr><th>Date</th><th>Catégorie</th><th>Motif</th><th>Mode</th><th class="num">Montant</th><th>Par</th><th></th></tr>'
+    + filtered.map(function(r) { return '<tr><td>' + fmtDate(r.date) + '</td><td><span class="badge info">' + esc(r.categorie) + '</span></td>'
       + '<td>' + esc(r.motif || '') + '</td><td>' + esc(r.mode || '') + '</td>'
       + '<td class="num"><b>' + money(r.montant) + '</b></td><td>' + esc(r.user_nom || '') + '</td>'
-      + '<td><button class="btn small danger" data-deldep="' + r.id + '">\uD83D\uDDD1</button></td></tr>'; }).join('')
+      + '<td><button class="btn small danger" data-deldep="' + r.id + '">🗑</button></td></tr>'; }).join('')
     + '</table></div>');
   var addBtn = $("#depAdd");
   if (addBtn) addBtn.addEventListener("click", function() {
-    openModal('<h3>Nouvelle depense</h3>'
+    openModal('<h3>Nouvelle dépense</h3>'
       + '<label class="field">Montant (F) <input id="depMontant" type="number" inputmode="decimal" min="1" placeholder="ex. 5000"></label>'
-      + '<label class="field">Categorie <select id="depCat">' + cats.map(function(c) { return '<option>' + c + '</option>'; }).join('') + '</select></label>'
-      + '<label class="field">Motif <input id="depMotif" placeholder="ex. Facture electricite juillet"></label>'
-      + '<label class="field">Mode de paiement <select id="depMode"><option value="especes">Especes</option><option value="mobile">Mobile money</option><option value="carte">Carte</option></select></label>'
+      + '<label class="field">Catégorie <select id="depCat">' + catsFull.map(function(c) { return '<option>' + c + '</option>'; }).join('') + '</select></label>'
+      + '<label class="field">Motif <input id="depMotif" placeholder="ex. Facture électricité juillet"></label>'
+      + '<label class="field">Mode de paiement <select id="depMode"><option value="especes">Espèces</option><option value="mobile">Mobile money</option><option value="carte">Carte</option></select></label>'
       + '<label class="field">Date <input id="depDate" type="date" value="' + todayKey() + '"></label>'
       + '<div class="row"><button class="btn success grow" id="depSave">Enregistrer</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>');
     $("#depSave").addEventListener("click", async function() {
@@ -2041,17 +2081,25 @@ renderers.depenses = async function () {
           montant: montant, categorie: $("#depCat").value, motif: $("#depMotif").value.trim(),
           mode: $("#depMode").value, date: $("#depDate").value
         })});
-        toast("Depense enregistree"); closeModal(); renderers.depenses().catch(function(){});
+        toast("Dépense enregistrée"); closeModal(); renderers.depenses().catch(function(){});
       } catch (e) { toast(e.message); }
     });
   });
+  var sBtn = $("#depSearch");
+  if (sBtn) sBtn.addEventListener("input", function() { renderDepenses(); });
+  var eBtn = $("#depExport");
+  if (eBtn) eBtn.addEventListener("click", function() {
+    downloadCSV("depenses.csv", [["Date","Catégorie","Motif","Mode","Montant","Par"]].concat(filtered.map(function(r) {
+      return [fmtDate(r.date), r.categorie, r.motif || "", r.mode || "", String(r.montant), r.user_nom || ""];
+    })));
+  });
   document.querySelectorAll("#depensesBox [data-deldep]").forEach(function(b) { b.addEventListener("click", function() {
-    askConfirm("Supprimer la depense", "Confirmer la suppression ?", async function() {
-      try { await api("/depenses/" + b.dataset.deldep, { method: "DELETE" }); toast("Depense supprimee"); renderers.depenses().catch(function(){}); }
+    askConfirm("Supprimer la dépense", "Confirmer la suppression ?", async function() {
+      try { await api("/depenses/" + b.dataset.deldep, { method: "DELETE" }); toast("Dépense supprimée"); renderers.depenses().catch(function(){}); }
       catch (e) { toast(e.message); }
     }, { danger: true, okLabel: "Supprimer" });
   }); });
-};
+}
 
 /* ---------- ANALYSE ABC ---------- */
 renderers.abc = async function (box) {
