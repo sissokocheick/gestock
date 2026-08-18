@@ -534,9 +534,9 @@ function addLastMatch() {
   const f = (venteFilter || "").toLowerCase();
   const matches = DB.produits.filter(p => p.actif && Number(p.stock) > 0 && (!f || p.nom.toLowerCase().includes(f) || (p.code || "").includes(f)));
   if (matches.length) {
-    const last = matches[matches.length - 1];
-    addToCart(last.id, 1);
-    toast("Ajouté : " + last.nom);
+    const best = matches[0];
+    addToCart(best.id, 1);
+    toast("Ajouté : " + best.nom);
     const vs = $("#venteSearch"); if (vs) vs.value = "";
     venteFilter = "";
     hideSuggest();
@@ -545,6 +545,23 @@ function addLastMatch() {
     toast("Produit introuvable : " + venteFilter);
   }
 }
+function getRecents() {
+  try { return JSON.parse(localStorage.getItem("gs_recent_prods") || "[]"); } catch (e) { return []; }
+}
+function pushRecents(ids) {
+  try {
+    let r = getRecents();
+    (ids || []).forEach(id => { r = r.filter(x => String(x) !== String(id)); r.unshift(id); });
+    localStorage.setItem("gs_recent_prods", JSON.stringify(r.slice(0, 12)));
+  } catch (e) {}
+}
+function recentsHTML() {
+  const r = getRecents();
+  const prods = r.map(id => produitById(id)).filter(p => p && p.actif && Number(p.stock) > 0).slice(0, 12);
+  if (!prods.length) return "";
+  return `<div class="recents" style="grid-column:1/-1"><span class="recents-title">🕘 Récents</span>` + prods.map(p => `<button type="button" class="recent-chip" data-pid="${p.id}">${esc(p.nom)}<span>${money(p.prix_vente)}</span></button>`).join("") + `</div>`;
+}
+
 function renderVenteGrid() {
   const f = venteFilter.toLowerCase();
   const fam = $("#venteFamille") ? $("#venteFamille").value : "";
@@ -553,10 +570,9 @@ function renderVenteGrid() {
   if (sort === "prix") list = [...list].sort((a, b) => Number(a.prix_vente) - Number(b.prix_vente));
   else if (sort === "prixDesc") list = [...list].sort((a, b) => Number(b.prix_vente) - Number(a.prix_vente));
   else list = [...list].sort((a, b) => a.nom.localeCompare(b.nom, "fr"));
-  $("#venteGrid").innerHTML = (list.length > 0 ? `<div style="grid-column:1/-1">${pgBar("vente", list.length, "produit(s)")}</div>` : "") +
-    (list.length === 0
+  $("#venteGrid").innerHTML = (!f ? recentsHTML() : "") + (list.length === 0
     ? `<div class="empty">Aucun produit trouvé</div>`
-    : pgSlice("vente", list).part.map(p => `
+    : list.map(p => `
       <div class="prod-card ${Number(p.stock) <= 0 ? "off" : ""}" data-pid="${p.id}">
         ${p.photo ? `<img src="${p.photo}" style="width:100%;height:64px;object-fit:cover;border-radius:8px;margin-bottom:6px">` : ""}
         <div class="pn">${esc(p.nom)}</div>
@@ -566,6 +582,10 @@ function renderVenteGrid() {
   $$("#venteGrid .prod-card").forEach(c => c.addEventListener("click", () => {
     const p = produitById(c.dataset.pid);
     if (p && Number(p.stock) > 0) { addToCart(p.id, 1); c.classList.add("flash"); setTimeout(() => c.classList.remove("flash"), 350); } else toast("Stock insuffisant");
+  }));
+  $$("#venteGrid .recent-chip").forEach(b => b.addEventListener("click", () => {
+    const p = produitById(b.dataset.pid);
+    if (p && Number(p.stock) > 0) { addToCart(p.id, 1); } else toast("Stock insuffisant");
   }));
 }
 function addToCart(pid, qte) {
@@ -682,8 +702,10 @@ async function encaisser() {
         method: "POST",
         body: JSON.stringify({ items: cart.map(l => ({ produitId: l.produitId, qte: l.qte })), remise, mode, recu, ref: "T" + uid().toUpperCase() })
       });
+      pushRecents(cart.map(l => l.produitId));
       cart = []; $("#cartRemise").value = 0; $("#cartRecu").value = 0;
       renderCart();
+      venteAfterClose = true;
       showTicket(v);
       try { localStorage.setItem("gs_last_ticket", JSON.stringify(v)); } catch(e) {}
       renderers.vente().catch(() => { });
@@ -2437,10 +2459,12 @@ function openModal(html) {
   const f = $("#modalCard").querySelector("input, select, textarea");
   if (f) { try { f.focus(); } catch (e) {} }
 }
+let venteAfterClose = false;
 function closeModal() {
   if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
   if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
   $("#modal").classList.add("hidden");
+  if (venteAfterClose) { venteAfterClose = false; if (curView === "vente") { const vs = $("#venteSearch"); if (vs) { vs.focus(); vs.select(); } } }
 }
 let toastTimer = null;
 function toast(msg) {
@@ -2685,6 +2709,13 @@ document.addEventListener("keydown", function(e) {
   document.addEventListener("keydown", e => {
     if (e.key === "F2") { e.preventDefault(); if ($("#view-vente").classList.contains("active")) $("#venteSearch").focus(); }
     if (e.key === "F9") { e.preventDefault(); if ($("#view-vente").classList.contains("active") && !$("#encaisserBtn").disabled) encaisser(); }
+    if (e.key === "Enter") {
+      var m2 = $("#modal");
+      if (m2 && !m2.classList.contains("hidden")) return;
+      var t2 = (e.target && e.target.tagName || "").toLowerCase();
+      if (t2 === "input" || t2 === "select" || t2 === "textarea") return;
+      if ($("#view-vente").classList.contains("active") && cart.length > 0 && $("#encaisserBtn") && !$("#encaisserBtn").disabled) { e.preventDefault(); encaisser(); }
+    }
   });
   $("#newProdBtn").addEventListener("click", () => prodForm(null));
   $("#prodFamilleFilter").addEventListener("change", renderers.produits);

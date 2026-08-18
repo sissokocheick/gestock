@@ -401,3 +401,10 @@ tr:hover td.sticky-l, tr:hover td.sticky-r { background: var(--thead); }
 .stk-details[open] summary::before{transform:rotate(90deg)}
 .stk-details[open] summary{border-bottom:1px solid var(--border)}
 .stk-details .stk-grid{padding:12px 12px 14px}
+
+/* Produits récents (accès rapide caisse) */
+.recents{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:4px 0 2px}
+.recents-title{font-weight:700;font-size:12px;color:var(--muted);margin-right:2px}
+.recent-chip{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border:1px solid var(--border);border-radius:999px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px;cursor:pointer;transition:.12s}
+.recent-chip span{color:var(--primary-d);font-weight:800}
+.recent-chip:hover{border-color:var(--primary);background:var(--hover)}
