@@ -42,6 +42,7 @@
     </div>
     <div class="topbar-right">
       <span id="connDot" class="conn-dot" title="Connexion"></span><span id="curUser" class="chip"></span>
+      <button id="helpBtn" class="btn ghost small" title="Raccourcis clavier">⌨️</button>
       <button id="themeBtn" class="btn ghost small" title="Mode sombre / clair">🌙</button>
       <button id="refreshBtn" class="btn ghost small" title="Actualiser la page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Actualiser</button>
       <button id="logoutBtn" class="btn ghost small" title="Se déconnecter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Déconnexion</button>
@@ -56,7 +57,8 @@
     <a class="nav-link" data-view="stock" data-right="R_STOCK"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg><span class="nav-label">Stocks</span></a>
     <a class="nav-link" data-view="point" data-right="R_POINT"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><span class="nav-label">Clôture de caisse</span></a>
         <a class="nav-link" data-view="versements" data-right="R_POINT"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/></svg><span class="nav-label">Versements</span><span id="notifBadge" class="notif-badge hidden">0</span></a>
-<a class="nav-link" data-view="depenses" data-right="R_RAPPORTS"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="8 12 12 16 16 12"/><line x1="12" y1="8" x2="12" y2="16"/></svg><span class="nav-label">Dépenses</span></a>
+<a class="nav-link" data-view="credits" data-right="R_VENTE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg><span class="nav-label">Crédits</span></a>
+    <a class="nav-link" data-view="depenses" data-right="R_RAPPORTS"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="8 12 12 16 16 12"/><line x1="12" y1="8" x2="12" y2="16"/></svg><span class="nav-label">Dépenses</span></a>
     <a class="nav-link" data-view="rapports" data-right="R_RAPPORTS"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg><span class="nav-label">Bénéfices</span></a>
     <a class="nav-link" data-view="params"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="nav-label">Paramètres</span></a>
   </nav>
@@ -70,6 +72,8 @@
       <div id="dashCards" class="cards"></div>
       <h3>Alertes stock</h3>
       <div id="dashAlerts" class="panel"></div>
+      <h3>⏰ Péremption proche</h3>
+      <div id="dashPeremptions" class="panel"></div>
       <h3>Top produits du jour</h3>
       <div id="dashTop" class="panel"></div>
       <h3>Activité des 7 derniers jours</h3>
@@ -246,6 +250,11 @@
 
   
     <!-- DÉPENSES -->
+    <section id="view-credits" class="view">
+      <h2>💳 Crédits clients</h2>
+      <div id="creditsBox"></div>
+    </section>
+
     <section id="view-depenses" class="view">
       <div id="depensesBox" class="panel"></div>
     </section>

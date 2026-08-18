@@ -319,10 +319,17 @@ app.post("/api/produits/:id/inventaire", auth, need("R_STOCK"), async (req, res)
 
 /* ---------- ventes ---------- */
 app.post("/api/ventes", auth, need("R_VENTE"), async (req, res) => {
-  const { items, remise, mode, recu } = req.body;
+  const { items, remise, mode, recu, client_nom } = req.body;
   if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: "Panier vide" });
-  const { rows: [modeRow] } = await pool.query("SELECT code, especes FROM modes_paiement WHERE code=$1 AND actif", [mode]);
-  if (!modeRow) return res.status(400).json({ error: "Mode de paiement invalide ou désactivé" });
+  const isCredit = mode === "credit";
+  let modeRow = { code: mode, especes: false };
+  if (isCredit) {
+    if (!String(client_nom || "").trim()) return res.status(400).json({ error: "Nom du client obligatoire pour une vente à crédit" });
+  } else {
+    const { rows: [mr] } = await pool.query("SELECT code, especes FROM modes_paiement WHERE code=$1 AND actif", [mode]);
+    if (!mr) return res.status(400).json({ error: "Mode de paiement invalide ou désactivé" });
+    modeRow = mr;
+  }
   const { rows: [caisse] } = await pool.query(
     "SELECT id FROM caisses WHERE user_id=$1 AND statut='ouverte' ORDER BY id DESC LIMIT 1", [req.user.id]);
   if (!caisse) return res.status(400).json({ error: "Aucune caisse ouverte — ouvrez votre caisse d'abord" });
@@ -356,9 +363,11 @@ app.post("/api/ventes", auth, need("R_VENTE"), async (req, res) => {
       return ex;
     }
     const rendu = modeRow.especes ? Math.max(0, (Number(recu) || net) - net) : 0;
+    const recuStored = isCredit ? 0 : (modeRow.especes ? (Number(recu) || net) : net);
+    const clientNom = isCredit ? String(client_nom || "").trim() : null;
     const { rows: [v] } = await c.query(
-      "INSERT INTO ventes(numero, user_id, caisse_id, remise, total, net, mode, recu, rendu) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",
-      [numero, req.user.id, caisse.id, rem, total, net, mode, modeRow.especes ? (Number(recu) || net) : net, rendu]);
+      "INSERT INTO ventes(numero, user_id, caisse_id, remise, total, net, mode, recu, rendu, client_nom) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",
+      [numero, req.user.id, caisse.id, rem, total, net, mode, recuStored, rendu, clientNom]);
     for (const it of items) {
       const p = map[it.produitId];
       const q = Number(it.qte);
@@ -403,6 +412,72 @@ app.get("/api/ventes", auth, async (req, res) => {
   }
   res.json(rows);
 });
+
+/* ---------- crédits (ardoise client) ---------- */
+app.get("/api/credits", auth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT v.id, v.numero, v.date, v.net, v.recu, v.client_nom, u.nom AS user_nom
+     FROM ventes v LEFT JOIN users u ON u.id = v.user_id
+     WHERE v.mode = 'credit'
+     ORDER BY v.date DESC LIMIT 500`);
+  res.json(rows.map(r => ({ ...r, reste: Math.max(0, Number(r.net) - Number(r.recu || 0)) })));
+});
+
+app.post("/api/credits/:id/payer", auth, need("R_VENTE"), async (req, res) => {
+  const id = Number(req.params.id);
+  const montant = Number(req.body.montant);
+  if (!montant || montant <= 0) return res.status(400).json({ error: "Montant invalide" });
+  await tx(req.user.id, async c => {
+    const { rows: [v] } = await c.query("SELECT * FROM ventes WHERE id=$1 AND mode='credit' FOR UPDATE", [id]);
+    if (!v) throw Object.assign(new Error("Crédit introuvable"), { status: 404 });
+    const reste = Math.max(0, Number(v.net) - Number(v.recu || 0));
+    if (montant > reste + 0.001) throw Object.assign(new Error("Le montant dépasse le reste à payer (" + reste + ")"), { status: 400 });
+    await c.query("UPDATE ventes SET recu = COALESCE(recu,0) + $1 WHERE id=$2", [montant, id]);
+  });
+  broadcast({ type: "caisse" });
+  const { rows: [nv] } = await pool.query("SELECT * FROM ventes WHERE id=$1", [id]);
+  res.json({ ...nv, reste: Math.max(0, Number(nv.net) - Number(nv.recu || 0)) });
+});
+
+/* ---------- annulation de vente ---------- */
+app.post("/api/ventes/:id/annuler", auth, need("R_RAPPORTS"), async (req, res) => {
+  const id = Number(req.params.id);
+  await tx(req.user.id, async c => {
+    const { rows: [v] } = await c.query("SELECT * FROM ventes WHERE id=$1 FOR UPDATE", [id]);
+    if (!v) throw Object.assign(new Error("Vente introuvable"), { status: 404 });
+    const { rows: items } = await c.query("SELECT * FROM vente_items WHERE vente_id=$1", [id]);
+    for (const it of items) {
+      const pId = it.produit_id;
+      const q = Number(it.qte);
+      if (pId) {
+        await c.query("UPDATE produits SET stock = stock + $1 WHERE id=$2", [q, pId]);
+        const { rows: lots } = await c.query(
+          "SELECT id FROM lots WHERE produit_id=$1 ORDER BY date_peremption ASC NULLS LAST, id ASC LIMIT 1", [pId]);
+        if (lots.length) await c.query("UPDATE lots SET qte_restante = qte_restante + $1 WHERE id=$2", [q, lots[0].id]);
+      }
+      await c.query("INSERT INTO mouvements(type, produit_id, qte, motif, user_id, ref) VALUES('Annulation vente',$1,$2,$3,$4,$5)",
+        [pId, q, "Annulation ticket " + v.numero, req.user.id, v.numero]);
+    }
+    await c.query("DELETE FROM ventes WHERE id=$1", [id]);
+  });
+  broadcast({ type: "vente" });
+  broadcast({ type: "stock" });
+  broadcast({ type: "caisse" });
+  res.json({ ok: true });
+});
+
+/* ---------- péremption proche ---------- */
+app.get("/api/peremptions/proches", auth, need("R_STOCK"), async (req, res) => {
+  const jours = Math.max(1, Number(req.query.jours) || 30);
+  const { rows } = await pool.query(
+    `SELECT l.id, l.numero, l.qte_restante, l.date_peremption, p.id AS produit_id, p.nom
+     FROM lots l JOIN produits p ON p.id = l.produit_id
+     WHERE l.qte_restante > 0 AND l.date_peremption IS NOT NULL
+       AND l.date_peremption <= (CURRENT_DATE + $1::int)
+     ORDER BY l.date_peremption ASC LIMIT 100`, [jours]);
+  res.json(rows);
+});
+
 app.get("/api/releve", auth, async (req, res) => {
   const { rows } = await pool.query(
     `SELECT v.*, u.nom AS user_nom FROM ventes v JOIN users u ON u.id=v.user_id WHERE v.user_id=$1 AND v.date::date = CURRENT_DATE ORDER BY v.date`, [req.user.id]);
@@ -929,7 +1004,9 @@ async function caisseAggregate(id) {
     "SELECT COALESCE(SUM(vc.montant),0) AS p FROM versements_caisse vc WHERE vc.caisse_id=$1 AND vc.statut='en_attente'", [id]);
   const verseEnAttente = Number(pending.p);
   const verseTot = versements.filter(v => v.statut === "valide").reduce((s, v) => s + Number(v.montant), 0);
-  const attendu = Number(c.fonds_initial) + Number(t.especes) - verseEsp;
+  const { rows: [rembCred] } = await pool.query(
+    "SELECT COALESCE(SUM(recu),0) AS paid FROM ventes WHERE caisse_id=$1 AND mode='credit'", [id]);
+  const attendu = Number(c.fonds_initial) + Number(t.especes) + Number(rembCred.paid) - verseEsp;
   return { ...c, especes: Number(t.especes), autres: Number(t.autres), total: Number(t.total), tickets: t.tickets,
            parMode, versements, verse_especes: verseEsp, verse_total: verseTot, verse_en_attente: verseEnAttente, attendu_especes: attendu };
 }

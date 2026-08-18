@@ -115,7 +115,7 @@ window.addEventListener("online", () => setConn(true));
 window.addEventListener("offline", () => setConn(false));
 function hasRight(r) { if (!cur) return false; if (cur.role === "admin") return true; return (cur.droits || []).includes(r); }
 const modeInfo = code => (DB.modes || []).find(m => m.code === code);
-const modeLabel = code => { const m = modeInfo(code); return m ? m.nom : code; };
+const modeLabel = code => { if (code === "credit") return "Crédit (ardoise)"; const m = modeInfo(code); return m ? m.nom : code; };
 const modeEspeces = code => { const m = modeInfo(code); return !!(m && m.especes); };
 const getParam = k => { const p = (DB.params || []).find(x => x.cle === k); return p ? p.valeur : null; };
 const remiseMaxPct = () => { const raw = getParam("remise_max_pct"); return (raw === null || raw === undefined || raw === "") ? 100 : Math.max(0, Number(raw) || 0); };
@@ -293,7 +293,7 @@ function go(view) {
 }
 
 /* ---------- chargement & erreur réseau ---------- */
-const VIEW_BOX = { accueil: "#dashCards", vente: "#venteGrid", releve: "#releveBox", produits: "#prodWrap", stock: "#stockWrap", point: "#pointBox", users: "#usersWrap", rapports: "#rapportBox", journal: "#journalWrap", params: "#paramsBox", depenses: "#depensesBox", versements: "#versementBox" };
+const VIEW_BOX = { accueil: "#dashCards", vente: "#venteGrid", releve: "#releveBox", produits: "#prodWrap", stock: "#stockWrap", point: "#pointBox", users: "#usersWrap", rapports: "#rapportBox", journal: "#journalWrap", params: "#paramsBox", depenses: "#depensesBox", versements: "#versementBox", credits: "#creditsBox" };
 function viewLoading(view) {
   const sel = VIEW_BOX[view];
   if (sel) { const el = $(sel); if (el) el.innerHTML = `<div class="empty">⏳ Chargement…</div>`; }
@@ -356,6 +356,24 @@ renderers.accueil = async function () {
     : `<div class="table-wrap"><table><tr><th>Produit</th><th>Stock</th><th>Seuil mini</th><th>Statut</th></tr>` +
       alerts.map(p => `<tr data-prodid="${p.id}" style="cursor:pointer" title="Cliquer pour modifier"><td>${esc(p.nom)}</td><td class="num">${p.stock}</td><td class="num">${p.stock_min}</td><td><span class="badge ${Number(p.stock) <= 0 ? "bad" : "warn"}">${Number(p.stock) <= 0 ? "Rupture" : "Stock bas"}</span></td></tr>`).join("") + `</table></div>`;
   $("#dashAlerts tr[data-prodid]").forEach(r => r.addEventListener("click", () => { const p = prods.find(x => String(x.id) === String(r.dataset.prodid)); if (p) prodForm(p); }));
+  const dpBox = $("#dashPeremptions");
+  if (dpBox) {
+    if (hasRight("R_STOCK")) {
+      try {
+        const per = await api("/peremptions/proches?jours=30");
+        dpBox.innerHTML = per.length === 0
+          ? `<div class="empty">✅ Aucun produit n'expire dans les 30 prochains jours</div>`
+          : `<div class="table-wrap"><table><tr><th>Produit</th><th>Lot</th><th>Reste</th><th>Expire le</th><th>Jours</th></tr>` +
+            per.slice(0, 12).map(x => {
+              const e = new Date(x.date_peremption);
+              const jours = Math.round((new Date(e.getFullYear(), e.getMonth(), e.getDate()) - new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())) / 86400000);
+              const dstr = isNaN(e) ? String(x.date_peremption).slice(0, 10) : (e.getFullYear() + "-" + String(e.getMonth() + 1).padStart(2, "0") + "-" + String(e.getDate()).padStart(2, "0"));
+              return `<tr style="cursor:pointer" data-prodid="${x.produit_id}" title="Ouvrir le produit"><td>${esc(x.nom)}</td><td>${esc(x.numero || "—")}</td><td class="num">${x.qte_restante}</td><td>${fmtDateOnly(dstr)}</td><td><span class="badge ${jours <= 7 ? "bad" : "warn"}">${jours} j</span></td></tr>`;
+            }).join("") + `</table></div>`;
+        $("#dashPeremptions tr[data-prodid]").forEach(r => r.addEventListener("click", () => { const p = prods.find(y => String(y.id) === String(r.dataset.prodid)); if (p) prodForm(p); }));
+      } catch (e) { dpBox.innerHTML = ""; }
+    } else { dpBox.innerHTML = ""; }
+  }
   const q = {};
   vts.forEach(v => (v.items || []).forEach(i => { q[i.nom] = (q[i.nom] || 0) + Number(i.qte); }));
   const top = Object.entries(q).sort((a, b) => b[1] - a[1]).slice(0, 5);
@@ -390,7 +408,8 @@ renderers.vente = async function () {
 function fillModeSelect() {
   const sel = $("#cartMode");
   const cur = sel.value;
-  sel.innerHTML = (DB.modes || []).filter(m => m.actif).map(m => `<option value="${esc(m.code)}">${esc(m.nom)}</option>`).join("");
+  sel.innerHTML = (DB.modes || []).filter(m => m.actif).map(m => `<option value="${esc(m.code)}">${esc(m.nom)}</option>`).join("")
+    + `<option value="credit">🤝 Crédit (ardoise)</option>`;
   if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
 }
 function renderCaisseBar() {
@@ -690,17 +709,19 @@ async function encaisser() {
   if (net <= 0) { toast("Montant invalide"); return; }
   const mode = $("#cartMode").value;
   let recu = net;
-  if (modeEspeces(mode)) {
+  if (mode === "credit") {
+    recu = 0;
+  } else if (modeEspeces(mode)) {
     recu = Number($("#cartRecu").value) || 0;
     if (recu < net) { toast("Montant reçu insuffisant"); return; }
   }
   const nbArt = cart.reduce((s, l) => s + l.qte, 0);
-  askConfirm("Confirmer la vente", `Vente de <b>${nbArt} article(s)</b> — total <b>${money(net)}</b>${remise > 0 ? `<br>Remise : <b>${money(remise)}</b>` : ""}<br>Paiement : <b>${esc(modeLabel(mode))}</b>${recu > net ? ` — reçu <b>${money(recu)}</b>, rendu <b>${money(recu - net)}</b>` : ""}<br><span class="muted">Le stock sera réduit automatiquement après confirmation.</span>`, async () => {
+  const doVente = async clientNom => {
     const btn = $("#encaisserBtn"); btn.disabled = true; btn.textContent = "Encaissement...";
     try {
       const v = await api("/ventes", {
         method: "POST",
-        body: JSON.stringify({ items: cart.map(l => ({ produitId: l.produitId, qte: l.qte })), remise, mode, recu, ref: "T" + uid().toUpperCase() })
+        body: JSON.stringify({ items: cart.map(l => ({ produitId: l.produitId, qte: l.qte })), remise, mode, recu, client_nom: clientNom, ref: "T" + uid().toUpperCase() })
       });
       pushRecents(cart.map(l => l.produitId));
       cart = []; $("#cartRemise").value = 0; $("#cartRecu").value = 0;
@@ -711,9 +732,17 @@ async function encaisser() {
       renderers.vente().catch(() => { });
     } catch (e) { toast(e.message); }
     btn.disabled = false; btn.textContent = "💵 Encaisser";
-  }, { icone: "💵", okLabel: "Encaisser" });
+  };
+  if (mode === "credit") {
+    askPrompt("🤝 Vente à crédit", "", val => {
+      const nom = String(val || "").trim();
+      if (!nom) { toast("Nom du client obligatoire — vente annulée"); return; }
+      doVente(nom);
+    });
+    return;
+  }
+  askConfirm("Confirmer la vente", `Vente de <b>${nbArt} article(s)</b> — total <b>${money(net)}</b>${remise > 0 ? `<br>Remise : <b>${money(remise)}</b>` : ""}<br>Paiement : <b>${esc(modeLabel(mode))}</b>${recu > net ? ` — reçu <b>${money(recu)}</b>, rendu <b>${money(recu - net)}</b>` : ""}<br><span class="muted">Le stock sera réduit automatiquement après confirmation.</span>`, () => doVente(null), { icone: "💵", okLabel: "Encaisser" });
 }
-
 /* ---------- ticket ---------- */
 function ticketHTML(v) {
   const b = DB.boutique || {};
@@ -739,13 +768,28 @@ ${esc(b.pied)}
 ${esc(b.email)} - ${esc(b.horaires)}`;
 }
 function showTicket(v) {
+  const canAnnuler = hasRight("R_RAPPORTS");
   openModal(`<h3>✅ Vente enregistrée - ${v.numero}</h3>
     <div class="ticket-preview">${esc(ticketHTML(v))}</div>
     <div class="row" style="margin-top:12px">
       <button class="btn primary grow" id="printTicketBtn">🖨️ Imprimer le ticket</button>
       <button class="btn ghost grow" onclick="closeModal()">Fermer</button>
+      ${canAnnuler ? `<button class="btn danger grow" id="annulerVenteBtn">↩️ Annuler la vente</button>` : ""}
     </div>`);
   $("#printTicketBtn").addEventListener("click", () => printTicket(v));
+  if (canAnnuler) {
+    $("#annulerVenteBtn").addEventListener("click", () => {
+      askConfirm("Annuler la vente", `Annuler le ticket <b>${esc(v.numero)}</b> de <b>${money(v.net)}</b> ?<br><span class="muted">Le stock sera restauré et la vente supprimée définitivement.</span>`, async () => {
+        try {
+          await api("/ventes/" + v.id + "/annuler", { method: "POST" });
+          closeModal();
+          toast("Vente annulée, stock restauré ↩️");
+          renderers.vente().catch(() => { });
+          if (curView === "releve") renderers.releve().catch(() => { });
+        } catch (e) { toast(e.message); }
+      }, { icone: "⚠️", danger: true, okLabel: "Oui, annuler" });
+    });
+  }
   if (usbPrinter) {
     const tb = document.createElement("button");
     tb.className = "btn success grow"; tb.textContent = "🧾 Imprimante thermique";
@@ -2593,6 +2637,65 @@ renderers.versements = async function () {
   renderVersementsTraites("valide", "versementValidesBox");
   renderVersementsTraites("refuse", "versementRefusesBox");
 };
+renderers.credits = async function () {
+  const box = $("#creditsBox");
+  if (!box) return;
+  box.innerHTML = `<div class="empty">⏳ Chargement…</div>`;
+  let list = [];
+  try { list = await api("/credits"); } catch (e) { box.innerHTML = `<div class="empty">Erreur : ${esc(e.message)}</div>`; return; }
+  const ouverts = list.filter(c => Number(c.reste) > 0.001);
+  const soldes = list.filter(c => Number(c.reste) <= 0.001);
+  const row = c => `<tr>
+    <td><b>${esc(c.client_nom || "—")}</b></td>
+    <td>${fmtDate(c.date)}</td>
+    <td class="num">${money(c.net)}</td>
+    <td class="num">${money(c.recu)}</td>
+    <td class="num"><b>${money(c.reste)}</b></td>
+    <td>${esc(c.user_nom || "")}</td>
+    <td>${Number(c.reste) > 0.001 ? `<button class="btn small primary" data-payer="${c.id}" data-reste="${c.reste}">💰 Rembourser</button>` : `<span class="badge ok">Soldé</span>`}</td>
+  </tr>`;
+  box.innerHTML = `
+    <div class="panel">
+      <div class="row" style="align-items:center;margin-bottom:6px"><h3 class="grow" style="margin:0">💳 Crédits clients (ardoises)</h3><button class="btn small" id="credRefresh">🔄 Actualiser</button></div>
+      <h4 style="margin:8px 0 4px">🟠 À encaisser (${ouverts.length})</h4>
+      ${ouverts.length === 0 ? `<div class="empty">Aucun crédit en cours 🎉</div>` : `<div class="table-wrap"><table><tr><th>Client</th><th>Date</th><th>Total</th><th>Payé</th><th>Reste</th><th>Caissière</th><th></th></tr>${ouverts.map(row).join("")}</table></div>`}
+      ${soldes.length ? `<h4 style="margin:12px 0 4px">✅ Soldés (${soldes.length})</h4><div class="table-wrap"><table><tr><th>Client</th><th>Date</th><th>Total</th><th>Payé</th><th>Reste</th><th>Caissière</th><th></th></tr>${soldes.map(row).join("")}</table></div>` : ""}
+    </div>`;
+  box.querySelectorAll("[data-payer]").forEach(b => b.addEventListener("click", () => {
+    const id = b.dataset.payer;
+    askPrompt("💰 Remboursement crédit", b.dataset.reste, val => {
+      const montant = Number(String(val || "").replace(",", "."));
+      if (!montant || montant <= 0) { toast("Montant invalide"); return; }
+      (async () => {
+        try {
+          await api("/credits/" + id + "/payer", { method: "POST", body: JSON.stringify({ montant }) });
+          toast("Remboursement enregistré ✅");
+          renderers.credits();
+        } catch (e) { toast(e.message); }
+      })();
+    });
+  }));
+  const rf = $("#credRefresh");
+  if (rf) rf.addEventListener("click", () => renderers.credits());
+};
+function showHelp() {
+  openModal(`<div class="confirm-box" style="text-align:left">
+    <h3 style="text-align:center">⌨️ Raccourcis clavier</h3>
+    <table style="width:100%;font-size:13px;border-collapse:collapse">
+      <tr><td><b>Entrée</b></td><td>Encaisser (page Caisse, hors champ de saisie)</td></tr>
+      <tr><td><b>F2</b></td><td>Focus recherche produit</td></tr>
+      <tr><td><b>F3</b></td><td>Focus quantité du dernier article</td></tr>
+      <tr><td><b>F4</b></td><td>Focus remise</td></tr>
+      <tr><td><b>F5</b></td><td>Changer le mode de paiement</td></tr>
+      <tr><td><b>F6</b></td><td>Suspendre / reprendre la vente</td></tr>
+      <tr><td><b>F7</b></td><td>Retirer le dernier article</td></tr>
+      <tr><td><b>F9</b></td><td>Encaisser</td></tr>
+      <tr><td><b>F10</b></td><td>Réimprimer le dernier ticket</td></tr>
+      <tr><td><b>Échap</b></td><td>Fermer une fenêtre / vider le panier</td></tr>
+    </table>
+    <div class="row" style="margin-top:12px"><button class="btn primary grow" onclick="closeModal()">Fermer</button></div>
+  </div>`);
+}
 function renderVersementConfig() {
   const loadUsers = !DB.users || !DB.users.length ? api("/users").then(function(u) { DB.users = u; }).catch(function() {}) : Promise.resolve();
   loadUsers.then(function() {
@@ -2628,6 +2731,8 @@ function bind() {
   document.addEventListener("click", e => { if (!e.target.closest("#globalSearch") && !e.target.closest("#globalResults")) hideGlobal(false); });
   const themeBtn = $("#themeBtn");
   if (themeBtn) themeBtn.addEventListener("click", toggleTheme);
+  const helpBtn = $("#helpBtn");
+  if (helpBtn) helpBtn.addEventListener("click", showHelp);
   const refreshBtn = $("#refreshBtn");
   if (refreshBtn) refreshBtn.addEventListener("click", () => { if (curView && renderers[curView]) { viewLoading(curView); renderers[curView]().catch(e => { const msg = String((e && e.message) || e); if (/injoignable|hors ligne|Failed to fetch|network/i.test(msg)) viewErreurReseau(curView); else toast(e.message || "Erreur"); }); } });
   $$("#sideNav .nav-link").forEach(a => {
