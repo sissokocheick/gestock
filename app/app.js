@@ -400,7 +400,7 @@ function renderCaisseBar() {
     bar.innerHTML = `<div class="panel" style="max-width:480px;margin:6px auto">
       <h3>🟢 Ouvrir votre caisse</h3>
       <p class="muted">Pour encaisser, ouvrez d'abord votre caisse du jour. Une seule caisse ouverte à la fois.</p>
-      <label class="field">Fonds de départ dans le tiroir (F, facultatif) <input id="caisseFonds" type="number" min="0" value="0" placeholder="ex. 25000"></label>
+      <label class="field">Fonds de départ dans le tiroir (F, facultatif) <input id="caisseFonds" type="number" inputmode="decimal" min="0" value="0" placeholder="ex. 25000"></label>
       <button class="btn primary block" id="caisseOuvrirBtn">🟢 Ouvrir ma caisse</button>
     </div>`;
     layout.classList.add("hidden");
@@ -431,7 +431,7 @@ function renderCaisseBar() {
 function versementForm(c) {
   openModal(`<h3>➕ Versement de caisse</h3>
     <p class="muted">Remise d'argent en cours de journée (au gérant, dépôt...) - déduite de votre caisse.</p>
-    <label class="field">Montant (F) <input id="vsMontant" type="number" min="1"></label>
+    <label class="field">Montant (F) <input id="vsMontant" type="number" inputmode="decimal" min="1"></label>
     <label class="field">Mode
       <select id="vsMode">${(DB.modes || []).filter(m => m.actif).map(m => `<option value="${esc(m.code)}">${esc(m.nom)}</option>`).join("")}</select>
     </label>
@@ -462,7 +462,7 @@ function clotureForm(c) {
     <div class="table-wrap"><table><tr><th>Date</th><th class="num">Montant</th><th>Mode</th><th>Motif</th><th>Statut</th></tr>${rows || `<tr><td colspan="5" class="empty">Aucun versement</td></tr>`}</table></div>
     ${Number(c.verse_en_attente) > 0 ? `<p class="error" style="margin-top:8px">⚠️ ${money(c.verse_en_attente)} de versement(s) en attente de validation - cet argent est encore dans le tiroir.</p>` : ""}
     <p class="muted" style="margin-top:8px">Comptez votre tiroir (especes) et saisissez le montant trouve.</p>
-    <label class="field">Argent compte dans le tiroir (F) <input id="ctCompte" type="number" min="0" value="${c.attendu_especes}"></label>
+    <label class="field">Argent compte dans le tiroir (F) <input id="ctCompte" type="number" inputmode="decimal" min="0" value="${c.attendu_especes}"></label>
     <label class="field">Notes <input id="ctNotes" placeholder="ex. ecart explique..."></label>
     <p id="ctWarn" class="error hidden"></p>
     <div class="row"><button class="btn danger grow" id="ctSave">Cloturer la caisse</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
@@ -938,20 +938,20 @@ function prodForm(p) {
       <input type="file" id="pfPhotoLoadInput" accept="image/*" class="hidden">
     </div>
     <div class="row">
-      <label class="field grow">Prix achat unité (F) <input id="pfPA" type="number" min="0" value="${p.prix_achat || ""}"></label>
-      <label class="field grow">Prix vente unité (F) <input id="pfPV" type="number" min="0" value="${p.prix_vente || ""}"></label>
+      <label class="field grow">Prix achat unité (F) <input id="pfPA" type="number" inputmode="decimal" min="0" value="${p.prix_achat || ""}"></label>
+      <label class="field grow">Prix vente unité (F) <input id="pfPV" type="number" inputmode="decimal" min="0" value="${p.prix_vente || ""}"></label>
     </div>
     <div class="panel" style="margin-top:4px">
       <b style="font-size:13px">🧮 OU calcul automatique : prix d'un carton / paquet</b>
       <div class="row">
-        <label class="field grow">Prix du carton (F) <input id="pfCarton" type="number" min="0" placeholder="ex. 12000"></label>
-        <label class="field grow">Quantité dans le carton <input id="pfCartonQte" type="number" min="1" placeholder="ex. 24"></label>
+        <label class="field grow">Prix du carton (F) <input id="pfCarton" type="number" inputmode="decimal" min="0" placeholder="ex. 12000"></label>
+        <label class="field grow">Quantité dans le carton <input id="pfCartonQte" type="number" inputmode="decimal" min="1" placeholder="ex. 24"></label>
       </div>
       <p class="muted" id="pfCalc">Le prix à l'unité sera calculé automatiquement (carton ÷ quantité).</p>
     </div>
     <div class="row">
-      <label class="field grow">Stock ${isNew ? "initial" : "actuel"} <input id="pfStock" type="number" min="0" value="${p.stock || 0}" ${isNew ? "" : "disabled"}></label>
-      <label class="field grow">Seuil minimum <input id="pfMin" type="number" min="0" value="${p.stock_min || 0}"></label>
+      <label class="field grow">Stock ${isNew ? "initial" : "actuel"} <input id="pfStock" type="number" inputmode="decimal" min="0" value="${p.stock || 0}" ${isNew ? "" : "disabled"}></label>
+      <label class="field grow">Seuil minimum <input id="pfMin" type="number" inputmode="decimal" min="0" value="${p.stock_min || 0}"></label>
     </div>
     <label class="field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="pfActif" style="width:auto" ${p.actif ? "checked" : ""}> Produit actif (visible à la vente)</label>
     <label class="field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="pfLot" style="width:auto" ${p.gere_par_lot ? "checked" : ""}> Géré par lot <span class="muted" style="font-weight:400;font-size:12px">(lot et date de péremption obligatoires à la réception)</span></label>
@@ -1064,11 +1064,14 @@ function renderStProduits(box, prods) {
 
 function renderStMouvements(box, prods) {
   box.innerHTML = `
-    <div id="stkSortieBox"></div>
     <div class="row wrap" style="margin-bottom:8px">
       <button class="btn primary" id="bonEntreeBtn">➕ Bon d'entrée (plusieurs produits)</button>
       <button class="btn" id="bonSortieBtn">➖ Bon de sortie (plusieurs produits)</button>
     </div>
+    <details class="stk-details">
+      <summary>🚚 Sortie rapide <span class="muted">— don, usage interne…</span></summary>
+      <div id="stkSortieBox"></div>
+    </details>
     <h3>📜 Mouvements de stock (historique)</h3>
     <div class="row wrap">
       <select id="mvtType"><option value="">Tous les types</option>${DB.typesMv.map(t => `<option ${mvtF.type === t.label ? "selected" : ""}>${esc(t.label)}</option>`).join("")}</select>
@@ -1133,13 +1136,12 @@ function renderStPeremptions(box, lots) {
 function renderStFournisseurs(box, four) {
   box.innerHTML = `
     <div class="point-card">
-      <h3>👥 Fournisseurs</h3>
+      <div class="row" style="align-items:center;margin-bottom:8px"><h3 class="grow" style="margin:0">👥 Fournisseurs</h3><button class="btn small primary" id="fourBtn">+ Fournisseur</button></div>
       ${four.length > 0 ? pgBar("stFour", four.length, "fournisseur(s)") : ""}
       <div class="table-wrap"><table><tr><th>Nom</th><th>Tél</th><th class="sticky-r">Actions</th></tr>
         ${four.length === 0 ? `<tr><td colspan="3" class="empty">Aucun fournisseur</td></tr>` :
           pgSlice("stFour", four).part.map(f => `<tr><td>${esc(f.nom)}</td><td>${esc(f.tel || "-")}</td><td class="sticky-r"><div class="actions"><button class="btn small" data-fedit="${f.id}">✏️</button><button class="btn small" data-fdel="${f.id}">🗑</button></div></td></tr>`).join("")}
       </table></div>
-      <button class="btn small primary" id="fourBtn" style="margin-top:6px">+ Fournisseur</button>
     </div>`;
   $$("#stBody [data-fedit]").forEach(b => b.addEventListener("click", () => fournisseurForm(four.find(f => String(f.id) === String(b.dataset.fedit)))));
   $$("#stBody [data-fdel]").forEach(b => b.addEventListener("click", async () => {
@@ -1155,14 +1157,13 @@ function renderStFournisseurs(box, four) {
 function renderStCommandes(box, cmds) {
   box.innerHTML = `
     <div class="point-card">
-      <h3>📋 Commandes fournisseurs</h3>
+      <div class="row" style="align-items:center;margin-bottom:8px"><h3 class="grow" style="margin:0">📋 Commandes fournisseurs</h3><button class="btn small primary" id="cmdBtn">+ Commande</button></div>
       ${cmds.length > 0 ? pgBar("stCmds", cmds.length, "commande(s)") : ""}
       <div class="table-wrap"><table><tr><th>N°</th><th>Fournisseur</th><th>Date</th><th>Statut</th><th class="sticky-r">Actions</th></tr>
         ${cmds.length === 0 ? `<tr><td colspan="5" class="empty">Aucune commande</td></tr>` :
           pgSlice("stCmds", cmds).part.map(c => `<tr><td>#${c.id}</td><td>${esc(c.fournisseur_nom || "-")}</td><td>${fmtDate(c.date)}</td><td>${c.statut === "recue" ? `<span class="badge ok">Reçue</span>` : `<span class="badge warn">En cours</span>`}</td>
           <td class="sticky-r"><div class="actions">${c.statut === "en_cours" ? `<button class="btn small success" data-cmdrec="${c.id}">📥 Réceptionner</button>` : ""}<button class="btn small" data-cmddet="${c.id}">👁️</button></div></td></tr>`).join("")}
       </table></div>
-      <button class="btn small primary" id="cmdBtn" style="margin-top:6px">+ Commande</button>
     </div>`;
   $$("#stBody [data-cmdrec]").forEach(b => b.addEventListener("click", () => commandeReception(cmds.find(x => String(x.id) === String(b.dataset.cmdrec)))));
   $$("#stBody [data-cmddet]").forEach(b => b.addEventListener("click", () => cmdDetail(cmds.find(c => String(c.id) === String(b.dataset.cmddet)))));
@@ -1250,7 +1251,7 @@ function bonForm(type) {
     row.dataset.pid = String(p.id);
     row.innerHTML = `<div class="bf-i-head"><div class="bf-i-nom">${esc(p.nom)}</div><span class="bf-i-stock">Stock : ${p.stock}</span><button class="btn small danger bf-del" title="Retirer cet article">✕</button></div>
       <div class="bf-i-body">
-        <label class="bf-i-q">Quantité <input type="number" min="1"${entree ? "" : ` max="${p.stock}"`} value="1" class="bfq"></label>
+        <label class="bf-i-q">Quantité <input type="number" inputmode="decimal" min="1"${entree ? "" : ` max="${p.stock}"`} value="1" class="bfq"></label>
         ${entree ? `<label class="bf-i-l">N° de lot * <input type="text" class="bflot" placeholder="ex. L2024-001"></label>
         <label class="bf-i-p">Péremption * <input type="date" class="bfper"></label>` : `<label class="bf-i-l">Lot à sortir
           <select class="bflotsel"><option value="">🔄 Auto (plus ancien)</option>${(DB.lots || []).filter(l => Number(l.produit_id) === Number(p.id) && Number(l.qte_restante) > 0).map(l => `<option value="${l.id}">${esc(l.numero || "Lot #" + l.id)} — ${fmtDateOnly(l.date_peremption)} (${fmt(l.qte_restante)})</option>`).join("")}</select>
@@ -1316,7 +1317,7 @@ function lotForm(p) {
   if (!p.gere_par_lot) { toast("Ce produit n'est pas gere par lot"); return; }
   openModal(`<h3>🧊 Ajouter un lot - ${esc(p.nom)}</h3>
     <label class="field">N° de lot * <input id="ltNum" placeholder="ex. L2024-001"></label>
-    <label class="field">Quantité <input id="ltQte" type="number" min="1" value="1"></label>
+    <label class="field">Quantité <input id="ltQte" type="number" inputmode="decimal" min="1" value="1"></label>
     <label class="field">Date de péremption * <input id="ltPer" type="date"></label>
     <p class="muted">Le stock augmente de la quantité. À la vente, le lot le plus ancien part en premier (FIFO).</p>
     <div class="row"><button class="btn success grow" id="ltSave">💾 Enregistrer</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
@@ -1363,7 +1364,7 @@ function commandeForm() {
     <p class="muted">Recherchez les articles à commander et ajoutez-les à la liste. La commande est enregistrée en une seule fois.</p>
     <div class="bf-top">
       <label class="field bf-field">Fournisseur <select id="cmFour"><option value="">- Choisir le fournisseur -</option>${fours.map(f => `<option value="${f.id}">${esc(f.nom)}</option>`).join("")}</select></label>
-      <label class="field bf-field">Coût de livraison (F) <input id="cmLiv" type="number" min="0" value="0"></label>
+      <label class="field bf-field">Coût de livraison (F) <input id="cmLiv" type="number" inputmode="decimal" min="0" value="0"></label>
     </div>
     <div class="bf-search"><input id="cmSearch" placeholder="Rechercher un article à commander..." autocomplete="off"></div>
     <div id="cmResults" class="bf-results"></div>
@@ -1380,8 +1381,8 @@ function commandeForm() {
         <div class="bfItem-main"><b>${esc(l.nom)}</b><span class="bfItem-sub">${money(l.pa)} / unité</span></div>
         <button class="bfItem-x" data-lindel="${i}">✕</button>
         <div class="bfItem-fields">
-          <label class="field bf-field">Quantité <input type="number" min="1" value="${l.qte}" data-linqte="${i}"></label>
-          <label class="field bf-field">Prix achat (F) <input type="number" min="0" value="${l.pa}" data-linpa="${i}"></label>
+          <label class="field bf-field">Quantité <input type="number" inputmode="decimal" min="1" value="${l.qte}" data-linqte="${i}"></label>
+          <label class="field bf-field">Prix achat (F) <input type="number" inputmode="decimal" min="0" value="${l.pa}" data-linpa="${i}"></label>
         </div>
       </div>`).join("");
     $$("#cmLines [data-lindel]").forEach(b => b.addEventListener("click", () => { lignes.splice(Number(b.dataset.lindel), 1); renderLignes(); }));
@@ -1430,7 +1431,7 @@ function commandeReception(c) {
         ${lignes.map((l, i) => `<div class="bfItem">
           <div class="bfItem-main"><b>${esc(l.nom)}</b><span class="bfItem-sub">commandé : ${l.qteCmd}</span></div>
           <div class="bfItem-fields">
-            <label class="field bf-field">Reçu <input type="number" min="0" value="${l.qte}" data-crqte="${i}"></label>
+            <label class="field bf-field">Reçu <input type="number" inputmode="decimal" min="0" value="${l.qte}" data-crqte="${i}"></label>
             <label class="field bf-field" style="${produitById(l.produitId) && produitById(l.produitId).gere_par_lot ? "" : "opacity:.55"}">N° de lot ${produitById(l.produitId) && produitById(l.produitId).gere_par_lot ? "*" : "(opt.)"} <input type="text" placeholder="ex. LOT-001" data-crlot="${i}"></label>
             <label class="field bf-field" style="${produitById(l.produitId) && produitById(l.produitId).gere_par_lot ? "" : "opacity:.55"}">Péremption ${produitById(l.produitId) && produitById(l.produitId).gere_par_lot ? "*" : "(opt.)"} <input type="date" data-crper="${i}"></label>
           </div>
@@ -1527,7 +1528,7 @@ function famManager(host) {
 function mvForm(p, type, qteDefaut) {
   openModal(`<h3>${type} - ${esc(p.nom)}</h3>
     <label class="field">Quantité
-      <input id="mvQte" type="number" value="${qteDefaut != null ? qteDefaut : 1}" min="1">
+      <input id="mvQte" type="number" inputmode="decimal" value="${qteDefaut != null ? qteDefaut : 1}" min="1">
     </label>
     ${type === "Ajustement" ? `<label class="field">Sens :
       <select id="mvSens">
@@ -1595,7 +1596,7 @@ function invForm(p) {
   openModal(`<h3>Inventaire - ${esc(p.nom)}</h3>
     <p class="muted">Stock actuel : <b>${p.stock}</b></p>
     <label class="field">Quantité réellement comptée
-      <input id="invQte" type="number" min="0" value="${p.stock}">
+      <input id="invQte" type="number" inputmode="decimal" min="0" value="${p.stock}">
     </label>
     <p class="muted" id="invEcart">Écart : 0</p>
     <div class="row"><button class="btn success grow" id="invSave">Valider l'inventaire</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
@@ -1960,7 +1961,7 @@ renderers.depenses = async function () {
   var addBtn = $("#depAdd");
   if (addBtn) addBtn.addEventListener("click", function() {
     openModal('<h3>Nouvelle depense</h3>'
-      + '<label class="field">Montant (F) <input id="depMontant" type="number" min="1" placeholder="ex. 5000"></label>'
+      + '<label class="field">Montant (F) <input id="depMontant" type="number" inputmode="decimal" min="1" placeholder="ex. 5000"></label>'
       + '<label class="field">Categorie <select id="depCat">' + cats.map(function(c) { return '<option>' + c + '</option>'; }).join('') + '</select></label>'
       + '<label class="field">Motif <input id="depMotif" placeholder="ex. Facture electricite juillet"></label>'
       + '<label class="field">Mode de paiement <select id="depMode"><option value="especes">Especes</option><option value="mobile">Mobile money</option><option value="carte">Carte</option></select></label>'
@@ -2137,16 +2138,15 @@ renderers.params = async function () {
         <div id="bpLogoPrev">${b.logo ? `<img src="${b.logo}" class="mini-logo">` : ""}</div>
         <div class="row"><button class="btn primary grow" id="bpSave">💾 Enregistrer</button></div>
         <label class="field">Remise maximale autorisée à la caisse (%) - 0 = aucune remise
-          <input id="bpRemiseMax" type="number" min="0" max="100" value="${getParam("remise_max_pct") ?? 100}">
+          <input id="bpRemiseMax" type="number" inputmode="decimal" min="0" max="100" value="${getParam("remise_max_pct") ?? 100}">
           <span class="muted" style="font-size:12px">Partagé sur tous les appareils ; la limite est aussi vérifiée côté serveur.</span></label>
       </div>
     </div>
     <div id="ptPaneModes" style="display:none">
       <div class="panel">
-        <h3>💳 Modes de paiement</h3>
+        <div class="row" style="align-items:center;margin-bottom:6px"><h3 class="grow" style="margin:0">💳 Modes de paiement</h3><button class="btn small primary" id="newModeBtn">+ Nouveau mode de paiement</button></div>
         <p class="muted">Créez vos propres modes (Wave, Orange Money, Chèque, Crédit...). « Espèces » = l'argent compté dans le tiroir.</p>
         <div id="modesBox"></div>
-        <button class="btn small primary" id="newModeBtn" style="margin-top:6px">+ Nouveau mode de paiement</button>
       </div>
     </div>
     <div id="ptPaneTicket" style="display:none">
@@ -2431,7 +2431,12 @@ function imprimerDirect(titre, corps, format) {
 }
 
 /* ---------- modal / toast ---------- */
-function openModal(html) { $("#modalCard").innerHTML = html; $("#modal").classList.remove("hidden"); }
+function openModal(html) {
+  $("#modalCard").innerHTML = html;
+  $("#modal").classList.remove("hidden");
+  const f = $("#modalCard").querySelector("input, select, textarea");
+  if (f) { try { f.focus(); } catch (e) {} }
+}
 function closeModal() {
   if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
   if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }

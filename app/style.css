@@ -392,3 +392,12 @@ tr:hover td.sticky-l, tr:hover td.sticky-r { background: var(--thead); }
 .gs-item .gs-sub{font-size:12px;color:var(--muted)}
 .gs-empty{color:var(--muted);padding:12px;text-align:center;font-size:13px}
 @media (max-width:820px){.topbar-search{display:none}}
+
+/* Sortie rapide repliable (onglet Entrées & sorties) */
+.stk-details{margin:0 0 10px;border:1px solid var(--border);border-radius:10px;background:var(--panel);overflow:hidden}
+.stk-details summary{cursor:pointer;list-style:none;padding:11px 12px;font-weight:600;display:flex;align-items:center;gap:6px;user-select:none}
+.stk-details summary::-webkit-details-marker{display:none}
+.stk-details summary::before{content:"▸";transition:transform .15s ease;color:var(--muted)}
+.stk-details[open] summary::before{transform:rotate(90deg)}
+.stk-details[open] summary{border-bottom:1px solid var(--border)}
+.stk-details .stk-grid{padding:12px 12px 14px}

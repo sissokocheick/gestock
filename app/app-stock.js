@@ -58,15 +58,15 @@ window.AppStock = (function () {
       box.innerHTML = `
         <div class="stk-card"><h3>📦 À commander (sous le seuil)</h3>
           ${suggestions.length
-            ? `<div style="overflow-x:auto"><table class="stk-table"><tr><th>Produit</th><th>En stock</th><th>Seuil</th><th>À commander</th></tr>
-              ${suggestions.map(s => `<tr><td>${esc(s.nom)}</td><td>${fmt(s.qte)}</td><td>${fmt(s.stock_min)}</td><td><b>${fmt(s.qte_suggeree)}</b></td></tr>`).join("")}
-              </table></div>
-              <div class="stk-grid">
+            ? `<div class="stk-grid" style="margin-bottom:10px">
                 <div><label>Fournisseur</label>
                   <select id="stkFourSel"><option value="">— Choisir un fournisseur —</option>${fournisseurs.map(f => `<option value="${esc(f.nom)}">${esc(f.nom)}</option>`).join("")}<option value="__new__">✚ Nouveau fournisseur...</option></select>
                   <input id="stkFourNew" style="display:none;margin-top:6px" placeholder="Nom du nouveau fournisseur"></div>
                 <div style="align-self:end"><button class="stk-btn" onclick="AppStock.commanderTout()">Créer la commande</button></div>
-              </div>`
+              </div>
+              <div style="overflow-x:auto"><table class="stk-table"><tr><th>Produit</th><th>En stock</th><th>Seuil</th><th>À commander</th></tr>
+              ${suggestions.map(s => `<tr><td>${esc(s.nom)}</td><td>${fmt(s.qte)}</td><td>${fmt(s.stock_min)}</td><td><b>${fmt(s.qte_suggeree)}</b></td></tr>`).join("")}
+              </table></div>`
             : `<div class="stk-empty">✅ Tout est au-dessus du seuil</div>`}
         </div>`;
       const stkFourSel = box.querySelector("#stkFourSel");
@@ -86,14 +86,12 @@ window.AppStock = (function () {
       const [magasins, produits] = await Promise.all([api("/magasins"), api("/produits")]);
       const magId = (magasins && magasins[0]) ? magasins[0].id : null;
       box.innerHTML = `
-        <div class="stk-card"><h3>🚚 Sortie rapide (don, usage interne…)</h3>
           <div class="stk-grid">
             <div><label>Produit</label><select id="stkProd">${produits.filter(p => p.actif !== false).map(p => `<option value="${p.id}">${esc(p.nom)}${p.code ? " (" + esc(p.code) + ")" : ""}</option>`).join("")}</select></div>
-            <div><label>Quantité</label><input id="stkQte" type="number" value="1" min="0" step="0.01"></div>
+            <div><label>Quantité</label><input id="stkQte" type="number" inputmode="decimal" value="1" min="0" step="0.01"></div>
             <div><label>Destinataire / motif</label><input id="stkMotif" placeholder="ex. Don à l'école, usage cuisine…"></div>
             <div style="align-self:end"><button class="stk-btn" onclick="AppStock.sortieRapide(${magId || "null"})">Enregistrer la sortie</button></div>
-          </div>
-        </div>`;
+          </div>`;
     } catch (e) {
       box.innerHTML = `<div class="stk-bad" style="padding:8px 10px;border-radius:8px">${esc(e.message)}</div>`;
     }
