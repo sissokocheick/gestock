@@ -539,3 +539,26 @@ tr:hover td.sticky-l, tr:hover td.sticky-r { background: var(--thead); }
 }
 
 
+
+/* ===== Écran de verrouillage PIN ===== */
+.lock-screen {
+  position: fixed; inset: 0; z-index: 9999;
+  background: var(--bg, #f5f6f8);
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px;
+}
+.lock-screen.hidden { display: none; }
+.lock-box {
+  width: 100%; max-width: 320px; text-align: center;
+  background: var(--panel, #fff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 16px;
+  padding: 28px 20px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.15);
+}
+@keyframes pinShake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+.pin-display.shake { animation: pinShake .4s ease; }

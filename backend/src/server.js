@@ -64,7 +64,7 @@ async function safeUser(u) {
       if (rows[0] && Array.isArray(rows[0].droits)) droits = rows[0].droits;
     } catch (e) { }
   }
-  return { id: u.id, nom: u.nom, role: u.role_code, droits, actif: u.actif, derniere_connexion: u.derniere_connexion || null };
+  return { id: u.id, nom: u.nom, role: u.role_code, droits, actif: u.actif, pin_set: !!(u.pin_code), derniere_connexion: u.derniere_connexion || null };
 }
 
 async function auth(req, res, next) {
@@ -73,7 +73,7 @@ async function auth(req, res, next) {
   if (!token) return res.status(401).json({ error: "Non connecté" });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    const { rows } = await pool.query("SELECT id, nom, role_code, droits, actif, token_version, derniere_connexion FROM users WHERE id = $1", [payload.id]);
+    const { rows } = await pool.query("SELECT id, nom, role_code, droits, actif, token_version, derniere_connexion, pin_code FROM users WHERE id = $1", [payload.id]);
     if (!rows.length) return res.status(401).json({ error: "Compte inconnu" });
     if (!rows[0].actif) return res.status(403).json({ error: "Ce compte est désactivé" });
     if (payload.token_version && Number(rows[0].token_version) !== Number(payload.token_version)) {
@@ -145,13 +145,17 @@ app.post("/api/auth/login", async (req, res) => {
 
 app.post("/api/auth/pin-login", async (req, res) => {
   const pin = String(req.body.pin || "").trim();
+  const userId = Number(req.body.user_id);
   if (!pin || pin.length < 4) return res.status(400).json({ error: "Code PIN à 4 chiffres requis" });
-  const { rows } = await pool.query("SELECT * FROM users WHERE pin_code = $1 AND actif = true", [pin]);
-  if (!rows.length) return res.status(401).json({ error: "Code PIN invalide ou compte inactif" });
+  if (!userId) return res.status(400).json({ error: "Session introuvable — reconnectez-vous" });
+  const { rows } = await pool.query("SELECT * FROM users WHERE id = $1 AND actif = true", [userId]);
   const u = rows[0];
+  if (!u) return res.status(401).json({ error: "Compte introuvable ou inactif" });
+  if (!u.pin_code) return res.status(403).json({ error: "Aucun code PIN configuré pour ce compte. Demandez à l'administrateur." });
+  if (String(u.pin_code).trim() !== pin) return res.status(401).json({ error: "Code PIN incorrect" });
   await pool.query("UPDATE users SET derniere_connexion = now() WHERE id = $1", [u.id]);
   u.derniere_connexion = new Date();
-  await auditEvent(u, "Connexion PIN", "Connexion rapide par code PIN de " + u.nom);
+  await auditEvent(u, "Connexion PIN", "Déverrouillage par code PIN de " + u.nom);
   res.json({ token: sign(u), user: await safeUser(u) });
 });
 

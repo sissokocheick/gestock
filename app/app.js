@@ -2471,6 +2471,10 @@ function userForm(u) {
     <p class="muted" style="margin-top:6px">Droits de ce rôle (les accès suivent automatiquement le rôle) :</p>
     <div id="ufDroitsBadges" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></div>
     <p class="hint" style="margin-top:8px">Les accès de l'utilisateur suivent son rôle. Pour modifier les droits d'un rôle, utilisez « Gérer les rôles ».</p>
+    <label class="field">Code PIN (verrouillage rapide)
+      <input id="ufPin" inputmode="numeric" maxlength="6" value="${esc(u.pin_code || "")}" placeholder="4 chiffres, ex. 1234">
+      <span class="hint" style="margin-top:4px">Facultatif — sert à déverrouiller la caisse d'un appui sur 🔒.</span>
+    </label>
     <label class="field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="ufActif" style="width:auto" ${u.actif ? "checked" : ""}> Compte actif</label>
     <div class="row"><button class="btn success grow" id="ufSave">💾 Enregistrer</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
   const drawDroitsRole = () => {
@@ -2487,7 +2491,7 @@ function userForm(u) {
     if (!nom) { toast("Le nom est obligatoire"); return; }
     if (isNew && !mdp) { toast("Le mot de passe est obligatoire"); return; }
     const roleSel = roles.find(r => r.code === $("#ufRole").value);
-    const body = { nom, role_code: $("#ufRole").value, droits: (roleSel && roleSel.droits) || [], actif: $("#ufActif").checked };
+    const body = { nom, role_code: $("#ufRole").value, droits: (roleSel && roleSel.droits) || [], actif: $("#ufActif").checked, pin_code: $("#ufPin").value.trim() || null };
     try {
       if (isNew) { body.mdp = mdp; await api("/users", { method: "POST", body: JSON.stringify(body) }); toast("Utilisateur créé"); }
       else { if (mdp) body.mdp = mdp; await api("/users/" + u.id, { method: "PUT", body: JSON.stringify(body) }); toast("Utilisateur modifié"); }
@@ -2748,12 +2752,14 @@ function promptDeconditionner(childProd) {
    VERROUILLAGE RAPIDE CODE PIN (CAISSIÈRES)
    ============================================================ */
 function pinLockModal() {
+  if (!cur || !cur.pin_set) { toast("Aucun code PIN configuré pour ce compte. Ajoutez-le dans Paramètres → Personnel."); return; }
   let pinVal = "";
-  openModal(`
-    <div style="text-align:center">
-      <div style="font-size:36px;margin-bottom:4px">🔒</div>
-      <h3 style="margin:0">Verrouillage de Caisse</h3>
-      <p class="muted" style="margin:2px 0 10px;font-size:12px">Tapez votre code PIN à 4 chiffres pour déverrouiller</p>
+  const box = $("#lockScreen");
+  if (!box) { toast("Écran de verrouillage indisponible"); return; }
+  box.innerHTML = `<div class="lock-box">
+      <div style="font-size:42px">🔒</div>
+      <h3 style="margin:4px 0">Caisse verrouillée</h3>
+      <p class="muted" style="margin:2px 0 12px;font-size:13px">${esc(cur.nom)} — tapez votre code PIN à 4 chiffres</p>
       <div id="pinDisplay" class="pin-display">••••</div>
       <div class="pin-pad">
         <button class="pin-btn" data-n="1">1</button>
@@ -2769,67 +2775,49 @@ function pinLockModal() {
         <button class="pin-btn" data-n="0">0</button>
         <button class="pin-btn" data-n="OK" style="color:var(--success);font-size:16px">✓</button>
       </div>
-      <button class="btn ghost small" onclick="closeModal()" style="margin-top:10px">Annuler</button>
-    </div>
-  `);
-
+      <button class="btn ghost small" id="lockLogoutBtn" style="margin-top:12px">↪️ Se déconnecter</button>
+    </div>`;
+  box.classList.remove("hidden");
   const disp = $("#pinDisplay");
-  const updateDisp = () => {
-    disp.textContent = pinVal ? "•".repeat(pinVal.length).padEnd(4, "–") : "••••";
-  };
-
-  const trySubmit = async () => {
+  const updateDisp = () => { disp.textContent = pinVal ? "•".repeat(pinVal.length).padEnd(4, "–") : "••••"; };
+  const unlock = async () => {
     if (pinVal.length < 4) { toast("Code PIN à 4 chiffres requis"); return; }
     try {
-      const res = await api("/auth/pin-login", { method: "POST", body: JSON.stringify({ pin: pinVal }) });
+      const res = await api("/auth/pin-login", { method: "POST", body: JSON.stringify({ pin: pinVal, user_id: cur.id }) });
       token = res.token;
       localStorage.setItem("gs_token", token);
       cur = res.user;
-      closeModal();
-      toast("Session déverrouillée : " + cur.nom + " ✅");
+      box.classList.add("hidden");
+      toast("Caisse déverrouillée : " + cur.nom + " ✅");
       await showApp();
     } catch (e) {
-      pinVal = "";
-      updateDisp();
+      pinVal = ""; updateDisp();
       disp.classList.add("shake");
       setTimeout(() => disp.classList.remove("shake"), 400);
       toast(e.message || "Code PIN incorrect");
     }
   };
-
   const onKey = e => {
-    const m = $("#modal");
-    if (!m || m.classList.contains("hidden")) { document.removeEventListener("keydown", onKey); return; }
+    if (box.classList.contains("hidden")) { document.removeEventListener("keydown", onKey, true); return; }
+    e.stopPropagation();
     if (e.key >= "0" && e.key <= "9") {
       e.preventDefault();
-      if (pinVal.length < 6) {
-        pinVal += e.key;
-        updateDisp();
-        if (pinVal.length === 4) trySubmit();
-      }
-    } else if (e.key === "Backspace") {
-      e.preventDefault();
-      pinVal = pinVal.slice(0, -1);
-      updateDisp();
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      trySubmit();
-    }
+      if (pinVal.length < 4) { pinVal += e.key; updateDisp(); if (pinVal.length === 4) unlock(); }
+    } else if (e.key === "Backspace") { e.preventDefault(); pinVal = pinVal.slice(0, -1); updateDisp(); }
+    else if (e.key === "Enter") { e.preventDefault(); unlock(); }
+    else if (e.key === "Escape") { e.preventDefault(); }
   };
-  document.addEventListener("keydown", onKey);
-
-  $$("#modalCard .pin-btn").forEach(b => {
+  document.addEventListener("keydown", onKey, true);
+  box.querySelectorAll(".pin-btn").forEach(b => {
     b.addEventListener("click", () => {
       const n = b.dataset.n;
       if (n === "C") { pinVal = pinVal.slice(0, -1); updateDisp(); }
-      else if (n === "OK") { trySubmit(); }
-      else if (pinVal.length < 6) {
-        pinVal += n;
-        updateDisp();
-        if (pinVal.length === 4) trySubmit();
-      }
+      else if (n === "OK") { unlock(); }
+      else if (pinVal.length < 4) { pinVal += n; updateDisp(); if (pinVal.length === 4) unlock(); }
     });
   });
+  const lo = $("#lockLogoutBtn");
+  if (lo) lo.addEventListener("click", () => { box.classList.add("hidden"); doLogout(); });
 }
 
 /* ---------- STOCK DORMANT ---------- */
