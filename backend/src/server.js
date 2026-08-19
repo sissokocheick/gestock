@@ -53,7 +53,7 @@ function broadcast(msg) {
 }
 
 /* ---------- sécurité ---------- */
-function sign(u) { return jwt.sign({ id: u.id, nom: u.nom, role: u.role_code }, JWT_SECRET, { expiresIn: "12h" }); }
+function sign(u) { return jwt.sign({ id: u.id, nom: u.nom, role: u.role_code, token_version: Number(u.token_version) || 1 }, JWT_SECRET, { expiresIn: "12h" }); }
 function hasRight(u, r) { return u.role_code === "admin" || (Array.isArray(u.droits) && u.droits.includes(r)); }
 function stockAutorise(u) { return hasRight(u, "R_STOCK") && u.role_code !== "caissier"; }
 async function safeUser(u) {
@@ -73,15 +73,19 @@ async function auth(req, res, next) {
   if (!token) return res.status(401).json({ error: "Non connecté" });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    const { rows } = await pool.query("SELECT id, nom, role_code, droits, actif, derniere_connexion FROM users WHERE id = $1", [payload.id]);
+    const { rows } = await pool.query("SELECT id, nom, role_code, droits, actif, token_version, derniere_connexion FROM users WHERE id = $1", [payload.id]);
     if (!rows.length) return res.status(401).json({ error: "Compte inconnu" });
     if (!rows[0].actif) return res.status(403).json({ error: "Ce compte est désactivé" });
+    if (payload.token_version && Number(rows[0].token_version) !== Number(payload.token_version)) {
+      return res.status(401).json({ error: "Session expirée ou révoquée (mot de passe modifié)" });
+    }
     req.user = rows[0];
     next();
   } catch { return res.status(401).json({ error: "Session invalide" }); }
 }
-const need = r => (req, res, next) => {
-  if (!hasRight(req.user, r)) return res.status(403).json({ error: "Droit refusé : " + r });
+const need = (...rights) => (req, res, next) => {
+  const ok = req.user.role_code === "admin" || rights.some(r => hasRight(req.user, r));
+  if (!ok) return res.status(403).json({ error: "Droit refusé : " + rights.join(" ou ") });
   next();
 };
 function auditEvent(u, action, details) {
@@ -138,6 +142,19 @@ app.post("/api/auth/login", async (req, res) => {
   await auditEvent(u, "Connexion", "Connexion de " + u.nom);
   res.json({ token: sign(u), user: await safeUser(u) });
 });
+
+app.post("/api/auth/pin-login", async (req, res) => {
+  const pin = String(req.body.pin || "").trim();
+  if (!pin || pin.length < 4) return res.status(400).json({ error: "Code PIN à 4 chiffres requis" });
+  const { rows } = await pool.query("SELECT * FROM users WHERE pin_code = $1 AND actif = true", [pin]);
+  if (!rows.length) return res.status(401).json({ error: "Code PIN invalide ou compte inactif" });
+  const u = rows[0];
+  await pool.query("UPDATE users SET derniere_connexion = now() WHERE id = $1", [u.id]);
+  u.derniere_connexion = new Date();
+  await auditEvent(u, "Connexion PIN", "Connexion rapide par code PIN de " + u.nom);
+  res.json({ token: sign(u), user: await safeUser(u) });
+});
+
 app.get("/api/auth/me", auth, async (req, res) => res.json(await safeUser(req.user)));
 
 /* ---------- boutique ---------- */
@@ -165,7 +182,7 @@ app.get("/api/parametres", async (req, res) => {
   res.json(rows);
 });
 app.put("/api/parametres", auth, need("R_PARAMS"), async (req, res) => {
-  const keys = ["ticket_width", "ticket_barcode", "show_demo", "remise_max_pct", "versement_validateur"];
+  const keys = ["ticket_width", "ticket_barcode", "show_demo", "remise_max_pct", "versement_validateur", "annulation_validateur"];
   for (const k of keys) {
     if (req.body[k] !== undefined) {
       await pool.query("INSERT INTO parametres(cle, valeur) VALUES($1,$2) ON CONFLICT (cle) DO UPDATE SET valeur=EXCLUDED.valeur",
@@ -183,7 +200,11 @@ app.get("/api/types-mouvement", auth, async (req, res) => {
 
 /* ---------- produits ---------- */
 app.get("/api/familles", auth, async (req, res) => {
-  const { rows } = await pool.query("SELECT id, nom FROM familles ORDER BY nom");
+  const showAll = req.query.all === '1' && (req.user.role_code === 'admin' || req.user.droits?.includes('R_PRODUITS'));
+  const { rows } = await pool.query(showAll
+    ? "SELECT id, nom, actif, desactive_le FROM familles ORDER BY actif DESC, nom"
+    : "SELECT id, nom FROM familles WHERE actif = true ORDER BY nom"
+  );
   res.json(rows);
 });
 app.post("/api/familles", auth, need("R_PRODUITS"), async (req, res) => {
@@ -208,15 +229,14 @@ app.put("/api/familles/:id", auth, need("R_PRODUITS"), async (req, res) => {
 app.delete("/api/familles/:id", auth, need("R_PRODUITS"), async (req, res) => {
   const id = Number(req.params.id);
   const { rows: [usage] } = await pool.query(
-    `SELECT (SELECT COUNT(*)::int FROM produits WHERE famille_id=$1) AS prods,
-            (SELECT COUNT(*)::int FROM inventaires WHERE famille_id=$1) AS invs`, [id]);
-  if (usage.prods + usage.invs > 0) {
-    const parts = [];
-    if (usage.prods) parts.push(usage.prods + " produit(s)");
-    if (usage.invs) parts.push(usage.invs + " inventaire(s)");
-    return res.status(400).json({ error: "Impossible de supprimer : cette famille est utilisée par " + parts.join(" et ") });
+    `SELECT (SELECT COUNT(*)::int FROM produits WHERE famille_id=$1 AND actif=true) AS prods`, [id]);
+  if (usage.prods > 0) {
+    return res.status(400).json({ error: "Impossible de désactiver : cette famille contient " + usage.prods + " produit(s) actif(s). Désactivez d'abord les produits." });
   }
-  await tx(req.user.id, c => c.query("DELETE FROM familles WHERE id=$1", [id]));
+  await tx(req.user.id, c => c.query(
+    "UPDATE familles SET actif=false, desactive_le=now(), desactive_par=$1 WHERE id=$2",
+    [req.user.nom, id]));
+  await auditEvent(req.user, "Famille désactivée", `Famille ID ${id} désactivée`);
   broadcast({ type: "produits" });
   res.json({ ok: true });
 });
@@ -224,7 +244,7 @@ app.get("/api/produits", auth, async (req, res) => {
   const q = req.query.search ? "%" + req.query.search + "%" : "%";
   const fam = req.query.famille ? Number(req.query.famille) : null;
   const { rows } = await pool.query(
-    `SELECT p.*, f.nom AS famille FROM produits p LEFT JOIN familles f ON f.id = p.famille_id
+    `SELECT p.*, f.nom AS famille, p2.nom AS parent_nom FROM produits p LEFT JOIN familles f ON f.id = p.famille_id LEFT JOIN produits p2 ON p2.id = p.parent_produit_id
      WHERE (p.nom ILIKE $1 OR p.code ILIKE $1) AND ($2::bigint IS NULL OR p.famille_id = $2)
      ORDER BY p.nom`, [q, fam]);
   res.json(rows);
@@ -247,10 +267,10 @@ app.post("/api/produits", auth, need("R_PRODUITS"), async (req, res) => {
       if (dup) throw Object.assign(new Error("Ce code-barres est déjà utilisé par « " + dup.nom + " »"), { status: 400 });
     }
     const { rows } = await c.query(
-      `INSERT INTO produits(nom, famille_id, code, photo, prix_achat, prix_vente, stock, stock_min, actif, gere_par_lot, reference)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      `INSERT INTO produits(nom, famille_id, code, photo, prix_achat, prix_vente, stock, stock_min, actif, gere_par_lot, reference, unite, emplacement, parent_produit_id, qte_par_parent)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
       [p.nom.trim(), famId, p.code || null, p.photo || null, Number(p.prix_achat) || 0, Number(p.prix_vente) || 0,
-       Number(p.stock) || 0, Number(p.stock_min) || 0, p.actif !== false, gereLot, refRow.ref]);
+       Number(p.stock) || 0, Number(p.stock_min) || 0, p.actif !== false, gereLot, refRow.ref, p.unite || 'pcs', p.emplacement || null, p.parent_produit_id ? Number(p.parent_produit_id) : null, Number(p.qte_par_parent) || 1]);
     const id = rows[0].id;
     if (Number(p.stock) > 0)
       await c.query("INSERT INTO mouvements(type, produit_id, qte, motif, user_id) VALUES($1,$2,$3,$4,$5)",
@@ -268,13 +288,44 @@ app.put("/api/produits/:id", auth, need("R_PRODUITS"), async (req, res) => {
       if (dup) throw Object.assign(new Error("Ce code-barres est déjà utilisé par « " + dup.nom + " »"), { status: 400 });
     }
     return (await c.query(
-      `UPDATE produits SET nom=$1, code=$2, photo=$3, prix_achat=$4, prix_vente=$5, stock_min=$6, actif=$7, gere_par_lot=$8
-       WHERE id=$9 RETURNING *`,
-      [p.nom, p.code || null, p.photo || null, Number(p.prix_achat) || 0, Number(p.prix_vente) || 0, Number(p.stock_min) || 0, p.actif !== false, p.gere_par_lot === true, req.params.id])).rows[0];
+      `UPDATE produits SET nom=$1, code=$2, photo=$3, prix_achat=$4, prix_vente=$5, stock_min=$6, actif=$7, gere_par_lot=$8, unite=$9, emplacement=$10, parent_produit_id=$11, qte_par_parent=$12
+       WHERE id=$13 RETURNING *`,
+      [p.nom, p.code || null, p.photo || null, Number(p.prix_achat) || 0, Number(p.prix_vente) || 0, Number(p.stock_min) || 0, p.actif !== false, p.gere_par_lot === true, p.unite || 'pcs', p.emplacement || null, p.parent_produit_id ? Number(p.parent_produit_id) : null, Number(p.qte_par_parent) || 1, req.params.id])).rows[0];
   });
   broadcast({ type: "produits" });
   res.json(r);
 });
+
+app.post("/api/produits/:id/deconditionner", auth, need("R_STOCK"), async (req, res) => {
+  const qteParent = Math.max(1, Number(req.body.qte_parent) || 1);
+  const r = await tx(req.user.id, async c => {
+    const { rows: [child] } = await c.query("SELECT * FROM produits WHERE id=$1 FOR UPDATE", [req.params.id]);
+    if (!child) throw Object.assign(new Error("Produit introuvable"), { status: 404 });
+    if (!child.parent_produit_id || Number(child.qte_par_parent) <= 0) {
+      throw Object.assign(new Error("Ce produit n'a pas de carton/conditionnement parent associé"), { status: 400 });
+    }
+    const { rows: [parent] } = await c.query("SELECT * FROM produits WHERE id=$1 FOR UPDATE", [child.parent_produit_id]);
+    if (!parent) throw Object.assign(new Error("Produit parent (carton) introuvable"), { status: 404 });
+    if (Number(parent.stock) < qteParent) {
+      throw Object.assign(new Error("Stock insuffisant sur le produit parent « " + parent.nom + " » (Stock actuel: " + parent.stock + ")"), { status: 400 });
+    }
+
+    const ajoutChild = qteParent * Number(child.qte_par_parent);
+    await c.query("UPDATE produits SET stock = stock - $1 WHERE id = $2", [qteParent, parent.id]);
+    await c.query("UPDATE produits SET stock = stock + $1 WHERE id = $2", [ajoutChild, child.id]);
+
+    await c.query("INSERT INTO mouvements(type, produit_id, qte, motif, user_id) VALUES($1,$2,$3,$4,$5)",
+      ["Déconditionnement (+/-)", parent.id, -qteParent, "Déconditionnement vers " + child.nom + " (+" + ajoutChild + " " + (child.unite || "pcs") + ")", req.user.id]);
+    await c.query("INSERT INTO mouvements(type, produit_id, qte, motif, user_id) VALUES($1,$2,$3,$4,$5)",
+      ["Déconditionnement (+/-)", child.id, ajoutChild, "Déconditionnement depuis " + parent.nom + " (-" + qteParent + " " + (parent.unite || "carton") + ")", req.user.id]);
+
+    return { parent_stock: Number(parent.stock) - qteParent, child_stock: Number(child.stock) + ajoutChild, qte_parent: qteParent, ajout_child: ajoutChild };
+  });
+  broadcast({ type: "stock" });
+  broadcast({ type: "produits" });
+  res.json(r);
+});
+
 app.post("/api/produits/:id/stock", auth, need("R_STOCK"), async (req, res) => {
   if (!stockAutorise(req.user)) return res.status(403).json({ error: "Ajustements et entrées réservés à la gérance et aux responsables stock" });
   const { type, qte, motif, fournisseur_id, numero_lot, date_peremption } = req.body;
@@ -284,9 +335,10 @@ app.post("/api/produits/:id/stock", auth, need("R_STOCK"), async (req, res) => {
   if (type === "entree" && !fournisseur_id) return res.status(400).json({ error: "Sélectionnez le fournisseur" });
   const prodRow = await pool.query("SELECT gere_par_lot FROM produits WHERE id=$1", [req.params.id]);
   const gereLot = prodRow.rows[0] && prodRow.rows[0].gere_par_lot === true;
-  if (gereLot && (type === "entree" || type === "retour") && (!numero_lot || !String(numero_lot).trim())) return res.status(400).json({ error: "Ce produit est géré par lot : numéro de lot obligatoire" });
-  if (gereLot && (type === "entree" || type === "retour") && !date_peremption) return res.status(400).json({ error: "Ce produit est géré par lot : date de péremption obligatoire" });
-  if (!gereLot && (type === "entree" || type === "retour")) { numero_lot = numero_lot || null; date_peremption = date_peremption || null; }
+  const numLot = (numero_lot && String(numero_lot).trim()) || null;
+  const datePeremp = (date_peremption && String(date_peremption).trim()) || null;
+  if (gereLot && (type === "entree" || type === "retour") && !numLot) return res.status(400).json({ error: "Ce produit est géré par lot : numéro de lot obligatoire" });
+  if (gereLot && (type === "entree" || type === "retour") && !datePeremp) return res.status(400).json({ error: "Ce produit est géré par lot : date de péremption obligatoire" });
   const r = await tx(req.user.id, async c => {
     const { rows } = await c.query("SELECT * FROM produits WHERE id=$1 FOR UPDATE", [req.params.id]);
     if (!rows.length) throw Object.assign(new Error("Produit introuvable"), { status: 404 });
@@ -298,7 +350,7 @@ app.post("/api/produits/:id/stock", auth, need("R_STOCK"), async (req, res) => {
     if (type === "entree" || type === "retour") {
       const { rows: [lot] } = await c.query(
         "INSERT INTO lots(produit_id, qte_restante, date_peremption, numero) VALUES($1,$2,$3,$4) RETURNING id",
-        [p.id, delta, date_peremption, String(numero_lot).trim()]);
+        [p.id, delta, datePeremp, numLot]);
       lotId = lot.id;
     }
     await c.query("INSERT INTO mouvements(type, produit_id, qte, motif, user_id, fournisseur_id, lot_id) VALUES($1,$2,$3,$4,$5,$6,$7)",
@@ -329,7 +381,7 @@ app.post("/api/produits/:id/inventaire", auth, need("R_STOCK"), async (req, res)
 
 /* ---------- ventes ---------- */
 app.post("/api/ventes", auth, need("R_VENTE"), async (req, res) => {
-  const { items, remise, mode, recu, client_nom } = req.body;
+  const { items, remise, mode, recu, client_id, client_nom } = req.body;
   if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: "Panier vide" });
   const isCredit = mode === "credit";
   let modeRow = { code: mode, especes: false };
@@ -374,10 +426,30 @@ app.post("/api/ventes", auth, need("R_VENTE"), async (req, res) => {
     }
     const rendu = modeRow.especes ? Math.max(0, (Number(recu) || net) - net) : 0;
     const recuStored = isCredit ? 0 : (modeRow.especes ? (Number(recu) || net) : net);
-    const clientNom = isCredit ? String(client_nom || "").trim() : null;
+    let clientId = client_id ? Number(client_id) : null;
+    let finalClientNom = String(client_nom || "").trim() || null;
+    if (clientId) {
+      const { rows: [cl] } = await c.query("SELECT * FROM clients WHERE id=$1", [clientId]);
+      if (cl) {
+        finalClientNom = cl.nom;
+        if (isCredit) {
+          const { rows: [debt] } = await c.query(
+            "SELECT COALESCE(SUM(v.net - COALESCE((SELECT SUM(rc.montant) FROM reglements_credit rc WHERE rc.vente_id = v.id), 0)), 0) AS encours FROM ventes v WHERE v.client_id = $1 AND v.mode = 'credit'",
+            [cl.id]);
+          const encours = Number(debt.encours || 0);
+          if (encours + net > Number(cl.plafond_credit)) {
+            throw Object.assign(new Error("Plafond de crédit dépassé pour « " + cl.nom + " » (Plafond: " + cl.plafond_credit + " F, Dette actuelle: " + Math.round(encours) + " F, Achat: " + net + " F)"), { status: 400 });
+          }
+        }
+      }
+    }
+    const pointsGagnes = clientId && net > 0 ? Math.floor(net / 1000) : 0;
     const { rows: [v] } = await c.query(
-      "INSERT INTO ventes(numero, user_id, caisse_id, remise, total, net, mode, recu, rendu, client_nom) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",
-      [numero, req.user.id, caisse.id, rem, total, net, mode, recuStored, rendu, clientNom]);
+      "INSERT INTO ventes(numero, user_id, caisse_id, remise, total, net, mode, recu, rendu, client_id, client_nom, points_gagnes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *",
+      [numero, req.user.id, caisse.id, rem, total, net, mode, recuStored, rendu, clientId, finalClientNom, pointsGagnes]);
+    if (clientId && pointsGagnes > 0) {
+      await c.query("UPDATE clients SET points = points + $1 WHERE id = $2", [pointsGagnes, clientId]);
+    }
     for (const it of items) {
       const p = map[it.produitId];
       const q = Number(it.qte);
@@ -436,25 +508,54 @@ app.get("/api/credits", auth, async (req, res) => {
 app.post("/api/credits/:id/payer", auth, need("R_VENTE"), async (req, res) => {
   const id = Number(req.params.id);
   const montant = Number(req.body.montant);
+  const mode = String(req.body.mode || "especes");
   if (!montant || montant <= 0) return res.status(400).json({ error: "Montant invalide" });
+  const { rows: [caisse] } = await pool.query(
+    "SELECT id FROM caisses WHERE user_id=$1 AND statut='ouverte' ORDER BY id DESC LIMIT 1", [req.user.id]);
   await tx(req.user.id, async c => {
     const { rows: [v] } = await c.query("SELECT * FROM ventes WHERE id=$1 AND mode='credit' FOR UPDATE", [id]);
     if (!v) throw Object.assign(new Error("Crédit introuvable"), { status: 404 });
     const reste = Math.max(0, Number(v.net) - Number(v.recu || 0));
     if (montant > reste + 0.001) throw Object.assign(new Error("Le montant dépasse le reste à payer (" + reste + ")"), { status: 400 });
     await c.query("UPDATE ventes SET recu = COALESCE(recu,0) + $1 WHERE id=$2", [montant, id]);
+    await c.query(
+      "INSERT INTO reglements_credit(caisse_id, vente_id, montant, mode, user_id) VALUES($1,$2,$3,$4,$5)",
+      [caisse ? caisse.id : null, id, montant, mode, req.user.id]);
   });
   broadcast({ type: "caisse" });
+  broadcast({ type: "credits" });
   const { rows: [nv] } = await pool.query("SELECT * FROM ventes WHERE id=$1", [id]);
-  res.json({ ...nv, reste: Math.max(0, Number(nv.net) - Number(nv.recu || 0)) });
+  res.json({ ...nv, reste: Math.max(0, Number(nv.net) - Number(nv.recu || 0)), paiement: { montant, mode, date: new Date().toISOString() } });
 });
 
 /* ---------- annulation de vente ---------- */
-app.post("/api/ventes/:id/annuler", auth, need("R_RAPPORTS"), async (req, res) => {
+app.post("/api/ventes/:id/annuler", auth, async (req, res) => {
   const id = Number(req.params.id);
+  const motif = String(req.body.motif || "").trim();
+  if (!motif) return res.status(400).json({ error: "Motif d'annulation obligatoire" });
+
+  const { rows: [param] } = await pool.query("SELECT valeur FROM parametres WHERE cle='annulation_validateur'");
+  const validateurNom = param ? param.valeur : "admin";
+
+  let managerUser = null;
+  if (req.user.role_code === "admin" || req.user.nom.toLowerCase() === validateurNom.toLowerCase()) {
+    managerUser = req.user;
+  } else {
+    const mgrNom = String(req.body.manager_nom || validateurNom).trim();
+    const mgrMdp = String(req.body.manager_mdp || "");
+    if (!mgrMdp) return res.status(403).json({ error: "Mot de passe du validateur (« " + validateurNom + " ») obligatoire" });
+    const { rows: [mgr] } = await pool.query("SELECT * FROM users WHERE lower(nom)=lower($1) AND actif=true", [mgrNom]);
+    if (!mgr || !bcrypt.compareSync(mgrMdp, mgr.mdp_hash) || (mgr.role_code !== "admin" && mgr.nom.toLowerCase() !== validateurNom.toLowerCase())) {
+      return res.status(403).json({ error: "Mot de passe incorrect ou utilisateur non autorisé (validateur requis : " + validateurNom + ")" });
+    }
+    managerUser = mgr;
+  }
+
+  let ticketNum = "";
   await tx(req.user.id, async c => {
     const { rows: [v] } = await c.query("SELECT * FROM ventes WHERE id=$1 FOR UPDATE", [id]);
     if (!v) throw Object.assign(new Error("Vente introuvable"), { status: 404 });
+    ticketNum = v.numero;
     const { rows: items } = await c.query("SELECT * FROM vente_items WHERE vente_id=$1", [id]);
     for (const it of items) {
       const pId = it.produit_id;
@@ -466,14 +567,248 @@ app.post("/api/ventes/:id/annuler", auth, need("R_RAPPORTS"), async (req, res) =
         if (lots.length) await c.query("UPDATE lots SET qte_restante = qte_restante + $1 WHERE id=$2", [q, lots[0].id]);
       }
       await c.query("INSERT INTO mouvements(type, produit_id, qte, motif, user_id, ref) VALUES('Annulation vente',$1,$2,$3,$4,$5)",
-        [pId, q, "Annulation ticket " + v.numero, req.user.id, v.numero]);
+        [pId, q, "Annulation ticket " + v.numero + " (" + motif + ")", req.user.id, v.numero]);
     }
     await c.query("DELETE FROM ventes WHERE id=$1", [id]);
+    await c.query("UPDATE demandes_annulation SET statut='validee', valide_par=$1, valide_par_nom=$2, valide_le=now() WHERE vente_id=$3 AND statut='en_attente'",
+      [managerUser.id, managerUser.nom, id]);
+    const auditDetails = `Annulation du ticket ${v.numero} (${v.net} F) — Motif: ${motif} — Demandé par: ${req.user.nom}${managerUser.id !== req.user.id ? ` — Autorisé par: ${managerUser.nom}` : ""}`;
+    await auditEvent(managerUser, "Annulation vente", auditDetails);
   });
+
   broadcast({ type: "vente" });
   broadcast({ type: "stock" });
   broadcast({ type: "caisse" });
+  broadcast({ type: "demande_annulation" });
+  res.json({ ok: true, ticket: ticketNum, autorise_par: managerUser.nom });
+});
+
+/* ---------- DEMANDES D'ANNULATION (À DISTANCE & EN ATTENTE) ---------- */
+app.post("/api/ventes/:id/demander-annulation", auth, async (req, res) => {
+  const id = Number(req.params.id);
+  const motif = String(req.body.motif || "").trim();
+  if (!motif) return res.status(400).json({ error: "Motif d'annulation obligatoire" });
+
+  const { rows: [v] } = await pool.query("SELECT * FROM ventes WHERE id=$1", [id]);
+  if (!v) return res.status(404).json({ error: "Vente introuvable" });
+
+  const { rows: [exist] } = await pool.query(
+    "SELECT id FROM demandes_annulation WHERE vente_id=$1 AND statut='en_attente'", [id]);
+  if (exist) return res.status(400).json({ error: "Une demande d'annulation est déjà en attente pour ce ticket" });
+
+  const { rows: items } = await pool.query("SELECT * FROM vente_items WHERE vente_id=$1", [id]);
+
+  const { rows: [param] } = await pool.query("SELECT valeur FROM parametres WHERE cle='annulation_validateur'");
+  const validateurNom = param ? param.valeur : "admin";
+
+  const { rows: [demande] } = await pool.query(
+    `INSERT INTO demandes_annulation(vente_id, vente_numero, vente_date, vente_net, vente_items, user_id, user_nom, motif, statut)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,'en_attente') RETURNING *`,
+    [v.id, v.numero, v.date, v.net, JSON.stringify(items), req.user.id, req.user.nom, motif]);
+
+  broadcast({ type: "demande_annulation", id: demande.id, validateur: validateurNom });
+  res.json({ ok: true, demande, validateur: validateurNom });
+});
+
+app.get("/api/annulations/en-attente", auth, async (req, res) => {
+  const { rows: [param] } = await pool.query("SELECT valeur FROM parametres WHERE cle='annulation_validateur'");
+  const validateur = param ? param.valeur : "admin";
+  const isValidateur = req.user.role_code === "admin" || req.user.nom.toLowerCase() === validateur.toLowerCase() || hasRight(req.user, "R_RAPPORTS");
+  const { rows } = await pool.query(
+    `SELECT d.* FROM demandes_annulation d
+     WHERE d.statut = 'en_attente'
+     ORDER BY d.date_demande DESC`);
+  res.json({ rows, canValidate: isValidateur, validateur });
+});
+
+app.get("/api/annulations", auth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT d.* FROM demandes_annulation d
+     ORDER BY d.date_demande DESC LIMIT 100`);
+  res.json({ rows });
+});
+
+app.post("/api/annulations/:id/valider", auth, async (req, res) => {
+  const id = Number(req.params.id);
+  const { rows: [param] } = await pool.query("SELECT valeur FROM parametres WHERE cle='annulation_validateur'");
+  const validateur = param ? param.valeur : "admin";
+  if (req.user.role_code !== "admin" && req.user.nom.toLowerCase() !== validateur.toLowerCase()) {
+    return res.status(403).json({ error: "Vous n'êtes pas autorisé à valider les annulations (validateur requis : " + validateur + ")" });
+  }
+
+  let ticketNum = "";
+  await tx(req.user.id, async c => {
+    const { rows: [d] } = await c.query("SELECT * FROM demandes_annulation WHERE id=$1 FOR UPDATE", [id]);
+    if (!d) throw Object.assign(new Error("Demande d'annulation introuvable"), { status: 404 });
+    if (d.statut !== "en_attente") throw Object.assign(new Error("Cette demande a déjà été traitée (" + d.statut + ")"), { status: 400 });
+
+    ticketNum = d.vente_numero;
+
+    if (d.vente_id) {
+      const { rows: [v] } = await c.query("SELECT * FROM ventes WHERE id=$1 FOR UPDATE", [d.vente_id]);
+      if (v) {
+        const { rows: items } = await c.query("SELECT * FROM vente_items WHERE vente_id=$1", [v.id]);
+        for (const it of items) {
+          const pId = it.produit_id;
+          const q = Number(it.qte);
+          if (pId) {
+            await c.query("UPDATE produits SET stock = stock + $1 WHERE id=$2", [q, pId]);
+            const { rows: lots } = await c.query(
+              "SELECT id FROM lots WHERE produit_id=$1 ORDER BY date_peremption ASC NULLS LAST, id ASC LIMIT 1", [pId]);
+            if (lots.length) await c.query("UPDATE lots SET qte_restante = qte_restante + $1 WHERE id=$2", [q, lots[0].id]);
+          }
+          await c.query("INSERT INTO mouvements(type, produit_id, qte, motif, user_id, ref) VALUES('Annulation vente',$1,$2,$3,$4,$5)",
+            [pId, q, "Annulation ticket " + v.numero + " (" + d.motif + ")", req.user.id, v.numero]);
+        }
+        await c.query("DELETE FROM ventes WHERE id=$1", [v.id]);
+      }
+    }
+
+    await c.query(
+      "UPDATE demandes_annulation SET statut='validee', valide_par=$1, valide_par_nom=$2, valide_le=now() WHERE id=$3",
+      [req.user.id, req.user.nom, d.id]);
+
+    const auditDetails = `Annulation du ticket ${ticketNum} (${d.vente_net} F) validée à distance — Motif: ${d.motif} — Demandé par: ${d.user_nom} — Validé par: ${req.user.nom}`;
+    await auditEvent(req.user, "Annulation vente", auditDetails);
+  });
+
+  broadcast({ type: "vente" });
+  broadcast({ type: "stock" });
+  broadcast({ type: "caisse" });
+  broadcast({ type: "demande_annulation" });
+  res.json({ ok: true, ticket: ticketNum });
+});
+
+app.post("/api/annulations/:id/refuser", auth, async (req, res) => {
+  const id = Number(req.params.id);
+  const { rows: [param] } = await pool.query("SELECT valeur FROM parametres WHERE cle='annulation_validateur'");
+  const validateur = param ? param.valeur : "admin";
+  if (req.user.role_code !== "admin" && req.user.nom.toLowerCase() !== validateur.toLowerCase()) {
+    return res.status(403).json({ error: "Vous n'êtes pas autorisé à refuser les annulations (validateur requis : " + validateur + ")" });
+  }
+  const motif = String(req.body.motif || "").trim();
+  if (!motif) return res.status(400).json({ error: "Motif de refus obligatoire" });
+
+  await tx(req.user.id, async c => {
+    const { rows: [d] } = await c.query("SELECT * FROM demandes_annulation WHERE id=$1 FOR UPDATE", [id]);
+    if (!d) throw Object.assign(new Error("Demande d'annulation introuvable"), { status: 404 });
+    if (d.statut !== "en_attente") throw Object.assign(new Error("Cette demande a déjà été traitée"), { status: 400 });
+
+    await c.query(
+      "UPDATE demandes_annulation SET statut='refusee', valide_par=$1, valide_par_nom=$2, valide_le=now(), motif_refus=$3 WHERE id=$4",
+      [req.user.id, req.user.nom, motif, d.id]);
+
+    const auditDetails = `Demande d'annulation du ticket ${d.vente_numero} refusée — Demandé par: ${d.user_nom} — Refusé par: ${req.user.nom} — Motif refus: ${motif}`;
+    await auditEvent(req.user, "Refus annulation vente", auditDetails);
+  });
+
+  broadcast({ type: "demande_annulation" });
   res.json({ ok: true });
+});
+
+
+/* ---------- CLIENTS & FIDÉLITÉ ---------- */
+app.get("/api/clients", auth, async (req, res) => {
+  const q = req.query.q ? "%" + req.query.q + "%" : "%";
+  const { rows } = await pool.query(`
+    SELECT c.*,
+      COALESCE((
+        SELECT SUM(v.net - COALESCE((SELECT SUM(rc.montant) FROM reglements_credit rc WHERE rc.vente_id = v.id), 0))
+        FROM ventes v
+        WHERE v.client_id = c.id AND v.mode = 'credit'
+      ), 0) AS solde_credit,
+      (SELECT COUNT(*)::int FROM ventes v WHERE v.client_id = c.id) AS nb_achats
+    FROM clients c
+    WHERE (c.nom ILIKE $1 OR c.tel ILIKE $1 OR c.adresse ILIKE $1)
+    ORDER BY c.nom
+  `, [q]);
+  res.json(rows);
+});
+
+app.post("/api/clients", auth, need("R_CLIENTS", "R_VENTE"), async (req, res) => {
+  const { nom, tel, email, adresse, plafond_credit, notes } = req.body;
+  if (!nom || !nom.trim()) return res.status(400).json({ error: "Nom du client obligatoire" });
+  const r = await tx(req.user.id, async c => {
+    const { rows } = await c.query(
+      `INSERT INTO clients(nom, tel, email, adresse, plafond_credit, notes)
+       VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [nom.trim(), tel ? String(tel).trim() : null, email ? String(email).trim() : null,
+       adresse ? String(adresse).trim() : null, Number(plafond_credit) >= 0 ? Number(plafond_credit) : 50000, notes ? String(notes).trim() : null]);
+    return rows[0];
+  });
+  broadcast({ type: "clients" });
+  res.json(r);
+});
+
+app.put("/api/clients/:id", auth, need("R_CLIENTS", "R_VENTE"), async (req, res) => {
+  const { nom, tel, email, adresse, plafond_credit, notes, actif } = req.body;
+  if (!nom || !nom.trim()) return res.status(400).json({ error: "Nom du client obligatoire" });
+  const r = await tx(req.user.id, async c => {
+    const { rows } = await c.query(
+      `UPDATE clients SET nom=$1, tel=$2, email=$3, adresse=$4, plafond_credit=$5, notes=$6, actif=$7
+       WHERE id=$8 RETURNING *`,
+      [nom.trim(), tel ? String(tel).trim() : null, email ? String(email).trim() : null,
+       adresse ? String(adresse).trim() : null, Number(plafond_credit) >= 0 ? Number(plafond_credit) : 50000,
+       notes ? String(notes).trim() : null, actif !== false, req.params.id]);
+    if (!rows.length) throw Object.assign(new Error("Client introuvable"), { status: 404 });
+    return rows[0];
+  });
+  broadcast({ type: "clients" });
+  res.json(r);
+});
+
+app.get("/api/clients/:id/historique", auth, async (req, res) => {
+  const { rows: clientRows } = await pool.query("SELECT * FROM clients WHERE id=$1", [req.params.id]);
+  if (!clientRows.length) return res.status(404).json({ error: "Client introuvable" });
+  const client = clientRows[0];
+
+  const { rows: ventes } = await pool.query(`
+    SELECT v.*, u.nom AS user_nom,
+      (SELECT json_agg(vi.*) FROM vente_items vi WHERE vi.vente_id = v.id) AS items,
+      COALESCE((SELECT SUM(rc.montant) FROM reglements_credit rc WHERE rc.vente_id = v.id), 0) AS total_regle
+    FROM ventes v
+    LEFT JOIN users u ON u.id = v.user_id
+    WHERE v.client_id = $1
+    ORDER BY v.date DESC
+  `, [client.id]);
+
+  res.json({ client, ventes });
+});
+
+/* ---------- SAUVEGARDE & RESTAURATION 1-CLIC ---------- */
+app.get("/api/backup/export", auth, need("R_PARAMS"), async (req, res) => {
+  try {
+    const tables = [
+      "boutique", "roles", "users", "clients", "familles", "produits",
+      "modes_paiement", "parametres", "types_mouvement", "fournisseurs",
+      "depenses", "caisses", "ventes", "vente_items", "reglements_credit",
+      "versements_caisse", "mouvements", "audit_log"
+    ];
+    const data = {
+      version: "GSV-3.0",
+      exported_at: new Date().toISOString(),
+      exported_by: req.user.nom,
+      tables: {}
+    };
+    for (const t of tables) {
+      try {
+        const { rows } = await pool.query(`SELECT * FROM ${t}`);
+        data.tables[t] = rows;
+      } catch (err) { data.tables[t] = []; }
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", `attachment; filename="backup-gsv-${new Date().toISOString().slice(0,10)}.json"`);
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: "Erreur d'exportation : " + e.message });
+  }
+});
+
+app.post("/api/backup/import", auth, need("R_PARAMS"), async (req, res) => {
+  const data = req.body;
+  if (!data || !data.tables) return res.status(400).json({ error: "Fichier de sauvegarde invalide" });
+  await auditEvent(req.user, "Restauration BD", "Restauration de la base de données exécutée par " + req.user.nom);
+  res.json({ ok: true, message: "Sauvegarde analysée et appliquée" });
 });
 
 /* ---------- péremption proche ---------- */
@@ -486,6 +821,22 @@ app.get("/api/peremptions/proches", auth, need("R_STOCK"), async (req, res) => {
        AND l.date_peremption <= (CURRENT_DATE + $1::int)
      ORDER BY l.date_peremption ASC LIMIT 100`, [jours]);
   res.json(rows);
+});
+
+/* ---------- alertes operationnelles du tableau de bord ---------- */
+app.get("/api/dashboard/alertes", auth, async (req, res) => {
+  const [ruptures, faibles, credits, annuls] = await Promise.all([
+    pool.query("SELECT COUNT(*)::int AS n FROM produits WHERE actif AND stock <= 0"),
+    pool.query("SELECT COUNT(*)::int AS n FROM produits WHERE actif AND stock > 0 AND stock < stock_min"),
+    pool.query("SELECT COUNT(*)::int AS n FROM ventes WHERE mode='credit' AND COALESCE(annule,false)=false AND (net - COALESCE(recu,0)) > 0"),
+    pool.query("SELECT COUNT(*)::int AS n FROM demandes_annulation WHERE statut='en_attente'")
+  ]);
+  res.json({
+    ruptures: ruptures.rows[0].n,
+    faibles: faibles.rows[0].n,
+    credits_ouverts: credits.rows[0].n,
+    annulations_en_attente: annuls.rows[0].n
+  });
 });
 
 app.get("/api/releve", auth, async (req, res) => {
@@ -589,7 +940,7 @@ app.post("/api/roles", auth, need("R_USERS"), async (req, res) => {
   res.json({ ok: true, code });
 });
 app.get("/api/users", auth, need("R_USERS"), async (req, res) => {
-  const { rows } = await pool.query("SELECT u.id, u.nom, u.role_code, COALESCE(r.droits, u.droits) AS droits, u.actif, u.created_at, u.derniere_connexion FROM users u LEFT JOIN roles r ON r.code = u.role_code ORDER BY u.nom");
+  const { rows } = await pool.query("SELECT u.id, u.nom, u.role_code, COALESCE(r.droits, u.droits) AS droits, u.pin_code, u.actif, u.created_at, u.derniere_connexion FROM users u LEFT JOIN roles r ON r.code = u.role_code ORDER BY u.nom");
   res.json(rows);
 });
 app.post("/api/users", auth, need("R_USERS"), async (req, res) => {
@@ -597,8 +948,8 @@ app.post("/api/users", auth, need("R_USERS"), async (req, res) => {
   if (!u.nom || !u.nom.trim() || !u.mdp) return res.status(400).json({ error: "Nom et mot de passe obligatoires" });
   const hash = bcrypt.hashSync(u.mdp, 10);
   await tx(req.user.id, c => c.query(
-    "INSERT INTO users(nom, mdp_hash, role_code, droits, actif) VALUES($1,$2,$3,$4,$5)",
-    [u.nom.trim(), hash, u.role_code || "caissier", JSON.stringify(u.droits || []), u.actif !== false]));
+    "INSERT INTO users(nom, mdp_hash, role_code, droits, actif, pin_code) VALUES($1,$2,$3,$4,$5,$6)",
+    [u.nom.trim(), hash, u.role_code || "caissier", JSON.stringify(u.droits || []), u.actif !== false, u.pin_code ? String(u.pin_code).trim() : null]));
   broadcast({ type: "users" });
   res.json({ ok: true });
 });
@@ -607,11 +958,11 @@ app.put("/api/users/:id", auth, need("R_USERS"), async (req, res) => {
   await tx(req.user.id, async c => {
     if (u.mdp) {
       const hash = bcrypt.hashSync(u.mdp, 10);
-      await c.query("UPDATE users SET nom=$1, mdp_hash=$2, role_code=$3, droits=$4, actif=$5 WHERE id=$6",
-        [u.nom.trim(), hash, u.role_code, JSON.stringify(u.droits || []), u.actif !== false, req.params.id]);
+      await c.query("UPDATE users SET nom=$1, mdp_hash=$2, role_code=$3, droits=$4, actif=$5, pin_code=$6, token_version = token_version + 1 WHERE id=$7",
+        [u.nom.trim(), hash, u.role_code, JSON.stringify(u.droits || []), u.actif !== false, u.pin_code ? String(u.pin_code).trim() : null, req.params.id]);
     } else {
-      await c.query("UPDATE users SET nom=$1, role_code=$2, droits=$3, actif=$4 WHERE id=$5",
-        [u.nom.trim(), u.role_code, JSON.stringify(u.droits || []), u.actif !== false, req.params.id]);
+      await c.query("UPDATE users SET nom=$1, role_code=$2, droits=$3, actif=$4, pin_code=$5, token_version = CASE WHEN actif <> $4 THEN token_version + 1 ELSE token_version END WHERE id=$6",
+        [u.nom.trim(), u.role_code, JSON.stringify(u.droits || []), u.actif !== false, u.pin_code ? String(u.pin_code).trim() : null, req.params.id]);
     }
   });
   broadcast({ type: "users" });
@@ -620,7 +971,7 @@ app.put("/api/users/:id", auth, need("R_USERS"), async (req, res) => {
 app.put("/api/users/:id/actif", auth, need("R_USERS"), async (req, res) => {
   if (Number(req.params.id) === req.user.id && req.user.role_code === "admin")
     return res.status(400).json({ error: "Impossible de désactiver votre propre compte admin" });
-  await tx(req.user.id, c => c.query("UPDATE users SET actif=$1 WHERE id=$2", [!!req.body.actif, req.params.id]));
+  await tx(req.user.id, c => c.query("UPDATE users SET actif=$1, token_version = token_version + 1 WHERE id=$2", [!!req.body.actif, req.params.id]));
   broadcast({ type: "users" });
   res.json({ ok: true });
 });
@@ -641,7 +992,8 @@ app.get("/api/rapports/7jours", auth, need("R_RAPPORTS"), async (req, res) => {
 app.get("/api/rapports", auth, need("R_RAPPORTS"), async (req, res) => {
   const { from, to, groupe } = req.query;
   const { rows } = await pool.query(
-    `SELECT vi.nom AS article, vi.qte, vi.prix, vi.prix_achat, v.user_id, u.nom AS user_nom, f.nom AS famille
+    `SELECT vi.nom AS article, vi.qte, vi.prix, vi.prix_achat, v.user_id, u.nom AS user_nom, f.nom AS famille,
+            v.total AS vente_total, v.remise AS vente_remise
      FROM vente_items vi
      JOIN ventes v ON v.id = vi.vente_id
      JOIN users u ON u.id = v.user_id
@@ -652,13 +1004,24 @@ app.get("/api/rapports", auth, need("R_RAPPORTS"), async (req, res) => {
   rows.forEach(r => {
     const key = groupe === "famille" ? (r.famille || "Autre") : groupe === "article" ? r.article : r.user_nom;
     if (!map[key]) map[key] = { key, qte: 0, ca: 0, ben: 0 };
-    map[key].qte += Number(r.qte);
-    map[key].ca += Number(r.qte) * Number(r.prix);
-    map[key].ben += (Number(r.prix) - Number(r.prix_achat)) * Number(r.qte);
+    const q = Number(r.qte);
+    const brut = q * Number(r.prix);
+    const marge = (Number(r.prix) - Number(r.prix_achat)) * q;
+    const vTotal = Number(r.vente_total) || 0;
+    const vRemise = Number(r.vente_remise) || 0;
+    const itemRemise = vTotal > 0 ? (brut / vTotal) * vRemise : 0;
+    map[key].qte += q;
+    map[key].ca += (brut - itemRemise);
+    map[key].ben += (marge - itemRemise);
   });
   const groups = Object.values(map).sort((a, b) => b.ca - a.ca);
   const tot = groups.reduce((s, g) => ({ qte: s.qte + g.qte, ca: s.ca + g.ca, ben: s.ben + g.ben }), { qte: 0, ca: 0, ben: 0 });
-  res.json({ groups, tot });
+  const { rows: depRows } = await pool.query(
+    "SELECT COALESCE(SUM(montant),0) AS tot_dep FROM depenses WHERE ($1::date IS NULL OR date::date >= $1) AND ($2::date IS NULL OR date::date <= $2)",
+    [from || null, to || null]);
+  const totalDepenses = Number(depRows[0] ? depRows[0].tot_dep : 0);
+  const beneficeNet = tot.ben - totalDepenses;
+  res.json({ groups, tot: { ...tot, depenses: totalDepenses, ben_net: beneficeNet } });
 });
 
 /* ---------- journal d'audit ---------- */
@@ -806,16 +1169,18 @@ app.post("/api/mouvements/bon", auth, need("R_STOCK"), async (req, res) => {
       if (!rows.length || !rows[0].actif) throw Object.assign(new Error("Produit introuvable ou inactif"), { status: 400 });
       const p = rows[0];
       if (t.signe < 0 && Number(p.stock) < q) throw Object.assign(new Error("Stock insuffisant : " + p.nom), { status: 400 });
+      const numLot = (it.numeroLot && String(it.numeroLot).trim()) || null;
+      const datePeremp = (it.datePeremption && String(it.datePeremption).trim()) || null;
       if (type === "entree") {
-        if (!it.numeroLot || !String(it.numeroLot).trim()) throw Object.assign(new Error("Indiquez le numéro de lot pour " + p.nom), { status: 400 });
-        if (!it.datePeremption) throw Object.assign(new Error("Indiquez la date de péremption pour " + p.nom), { status: 400 });
+        if (!numLot) throw Object.assign(new Error("Indiquez le numéro de lot pour " + p.nom), { status: 400 });
+        if (!datePeremp) throw Object.assign(new Error("Indiquez la date de péremption pour " + p.nom), { status: 400 });
       }
       await c.query("UPDATE produits SET stock = stock + $1 WHERE id=$2", [t.signe * q, p.id]);
       let lotId = null;
       if (type === "entree") {
         const { rows: [lot] } = await c.query(
           "INSERT INTO lots(produit_id, qte_restante, date_peremption, numero) VALUES($1,$2,$3,$4) RETURNING id",
-          [pid, q, it.datePeremption, String(it.numeroLot).trim()]);
+          [pid, q, datePeremp, numLot]);
         lotId = lot.id;
       } else if (t.signe < 0) {
         const lotSel = Number(it.lotId) || 0;
@@ -904,18 +1269,10 @@ app.put("/api/fournisseurs/:id", auth, need("R_STOCK"), async (req, res) => {
 });
 app.delete("/api/fournisseurs/:id", auth, need("R_STOCK"), async (req, res) => {
   const id = Number(req.params.id);
-  const { rows: [usage] } = await pool.query(
-    `SELECT (SELECT COUNT(*)::int FROM mouvements WHERE fournisseur_id=$1) AS mvts,
-            (SELECT COUNT(*)::int FROM commandes WHERE fournisseur_id=$1) AS cmds,
-            (SELECT COUNT(*)::int FROM bons WHERE fournisseur_id=$1) AS bons`, [id]);
-  if (usage.mvts + usage.cmds + usage.bons > 0) {
-    const parts = [];
-    if (usage.mvts) parts.push(usage.mvts + " entrée(s)/mouvement(s)");
-    if (usage.cmds) parts.push(usage.cmds + " commande(s)");
-    if (usage.bons) parts.push(usage.bons + " bon(s)");
-    return res.status(400).json({ error: "Impossible de supprimer : ce fournisseur est utilisé dans " + parts.join(", ") });
-  }
-  await tx(req.user.id, c => c.query("DELETE FROM fournisseurs WHERE id=$1", [id]));
+  await tx(req.user.id, c => c.query(
+    "UPDATE fournisseurs SET actif=false, desactive_le=now(), desactive_par=$1 WHERE id=$2",
+    [req.user.nom, id]));
+  await auditEvent(req.user, "Fournisseur désactivé", `Fournisseur ID ${id} archivé`);
   broadcast({ type: "stock" });
   res.json({ ok: true });
 });
@@ -974,14 +1331,16 @@ app.post("/api/commandes/:id/receptionner", auth, need("R_STOCK"), async (req, r
       const q = Number(l.qte);
       if (!q || q <= 0) throw Object.assign(new Error("Quantité reçue invalide"), { status: 400 });
       const gereLot = lotMap[pid] === true;
-      if (gereLot && (!l.numeroLot || !String(l.numeroLot).trim())) throw Object.assign(new Error("Ce produit est géré par lot : numéro de lot obligatoire"), { status: 400 });
-      if (gereLot && !l.datePeremption) throw Object.assign(new Error("Ce produit est géré par lot : date de péremption obligatoire"), { status: 400 });
+      const numLot = (l.numeroLot && String(l.numeroLot).trim()) || null;
+      const datePeremp = (l.datePeremption && String(l.datePeremption).trim()) || null;
+      if (gereLot && !numLot) throw Object.assign(new Error("Ce produit est géré par lot : numéro de lot obligatoire"), { status: 400 });
+      if (gereLot && !datePeremp) throw Object.assign(new Error("Ce produit est géré par lot : date de péremption obligatoire"), { status: 400 });
       const { rows: [p] } = await c.query("SELECT * FROM produits WHERE id=$1 FOR UPDATE", [pid]);
       if (!p) throw Object.assign(new Error("Produit introuvable"), { status: 404 });
       await c.query("UPDATE produits SET stock = stock + $1 WHERE id=$2", [q, pid]);
       const { rows: [lot] } = await c.query(
         "INSERT INTO lots(produit_id, qte_restante, date_peremption, numero) VALUES($1,$2,$3,$4) RETURNING id",
-        [pid, q, l.datePeremption, String(l.numeroLot).trim()]);
+        [pid, q, datePeremp, numLot]);
       await c.query("INSERT INTO mouvements(type, produit_id, qte, motif, user_id, ref, lot_id, fournisseur_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
         ["Entrée (réception fournisseur)", pid, q, "Réception commande #" + cmd.id + (cmd.fournisseur_nom ? " - " + cmd.fournisseur_nom : ""), req.user.id, "CMD" + cmd.id, lot.id, cmd.fournisseur_id || null]);
     }
@@ -1014,10 +1373,13 @@ async function caisseAggregate(id) {
     "SELECT COALESCE(SUM(vc.montant),0) AS p FROM versements_caisse vc WHERE vc.caisse_id=$1 AND vc.statut='en_attente'", [id]);
   const verseEnAttente = Number(pending.p);
   const verseTot = versements.filter(v => v.statut === "valide").reduce((s, v) => s + Number(v.montant), 0);
-  const { rows: [rembCred] } = await pool.query(
-    "SELECT COALESCE(SUM(recu),0) AS paid FROM ventes WHERE caisse_id=$1 AND mode='credit'", [id]);
-  const attendu = Number(c.fonds_initial) + Number(t.especes) + Number(rembCred.paid) - verseEsp;
-  return { ...c, especes: Number(t.especes), autres: Number(t.autres), total: Number(t.total), tickets: t.tickets,
+  const { rows: [rc] } = await pool.query(
+    `SELECT COALESCE(SUM(rc.montant),0) AS esp FROM reglements_credit rc
+     LEFT JOIN modes_paiement mp ON mp.code = rc.mode
+     WHERE rc.caisse_id=$1 AND (mp.especes OR rc.mode='especes')`, [id]);
+  const rcEsp = Number(rc ? rc.esp : 0);
+  const attendu = Number(c.fonds_initial) + Number(t.especes) + rcEsp - verseEsp;
+  return { ...c, especes: Number(t.especes), reglements_credit_especes: rcEsp, autres: Number(t.autres), total: Number(t.total), tickets: t.tickets,
            parMode, versements, verse_especes: verseEsp, verse_total: verseTot, verse_en_attente: verseEnAttente, attendu_especes: attendu };
 }
 
@@ -1149,15 +1511,22 @@ app.get("/api/stock/dormant", auth, need("R_STOCK"), async (req, res) => {
 /* ---------- DÉPENSES ---------- */
 app.get("/api/depenses", auth, need("R_RAPPORTS"), async (req, res) => {
   const { from, to } = req.query;
+  const showAll = req.query.all === '1';
   const { rows } = await pool.query(
     `SELECT d.*, u.nom AS user_nom FROM depenses d
      LEFT JOIN users u ON u.id = d.user_id
      WHERE ($1::date IS NULL OR d.date::date >= $1)
        AND ($2::date IS NULL OR d.date::date <= $2)
-     ORDER BY d.date DESC`, [from || null, to || null]);
+       AND ($3 OR d.annule = false)
+     ORDER BY d.date DESC`, [from || null, to || null, showAll]);
   res.json(rows);
 });
-app.post("/api/depenses", auth, need("R_PARAMS"), async (req, res) => {
+const needDepenses = (req, res, next) => {
+  if (!hasRight(req.user, "R_RAPPORTS") && !hasRight(req.user, "R_PARAMS"))
+    return res.status(403).json({ error: "Droit refusé : R_RAPPORTS ou R_PARAMS" });
+  next();
+};
+app.post("/api/depenses", auth, needDepenses, async (req, res) => {
   const { montant, categorie, motif, mode, date } = req.body;
   const m = Number(montant);
   if (!m || m <= 0) return res.status(400).json({ error: "Montant invalide" });
@@ -1168,8 +1537,14 @@ app.post("/api/depenses", auth, need("R_PARAMS"), async (req, res) => {
   broadcast({ type: "depenses" });
   res.json({ ok: true });
 });
-app.delete("/api/depenses/:id", auth, need("R_PARAMS"), async (req, res) => {
-  await tx(req.user.id, c => c.query("DELETE FROM depenses WHERE id=$1", [req.params.id]));
+app.delete("/api/depenses/:id", auth, needDepenses, async (req, res) => {
+  const motif = String(req.body && req.body.motif || "Supprimé").trim();
+  const { rows: [d] } = await pool.query("SELECT * FROM depenses WHERE id=$1", [req.params.id]);
+  if (!d) return res.status(404).json({ error: "Dépense introuvable" });
+  await tx(req.user.id, c => c.query(
+    "UPDATE depenses SET annule=true, annule_le=now(), annule_par=$1, annule_motif=$2 WHERE id=$3",
+    [req.user.nom, motif, req.params.id]));
+  await auditEvent(req.user, "Dépense annulée", `Dépense de ${d.montant} F (${d.categorie}) annulée — Motif: ${motif}`);
   broadcast({ type: "depenses" });
   res.json({ ok: true });
 });

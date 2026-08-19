@@ -1,4 +1,4 @@
-const CACHE = "gsv5";
+const CACHE = "gsv15";
 const PRECACHE = ["/", "/index.html", "/app.js", "/style.css", "/manifest.webmanifest", "/icons/icon.svg", "/js/JsBarcode.min.js"];
 
 self.addEventListener("install", e => {

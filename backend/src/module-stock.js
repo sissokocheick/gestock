@@ -44,10 +44,11 @@ async function executerBon(c, bon, userId) {
         `INSERT INTO stocks_magasin(magasin_id, produit_id, qte) VALUES($1,$2,$3)
          ON CONFLICT (magasin_id, produit_id) DO UPDATE SET qte = stocks_magasin.qte + EXCLUDED.qte`,
         [mg, pid, qte]);
-      if (it.date_peremption) {
+      const dp = (it.date_peremption && String(it.date_peremption).trim()) || null;
+      if (dp) {
         await c.query(
           "INSERT INTO lots(produit_id, magasin_id, qte_restante, date_peremption) VALUES($1,$2,$3,$4)",
-          [pid, mg, qte, it.date_peremption]);
+          [pid, mg, qte, dp]);
       }
       await mvt();
     } else if (["SORTIE", "DESTRUCTION", "TRANSFERT_EXP"].includes(bon.type)) {
@@ -195,9 +196,10 @@ module.exports = function register({ app, auth, need, broadcast }) {
       await c.query("UPDATE bons SET reference = 'BON-' || type || '-' || id WHERE id=$1", [b.id]);
       for (const it of items) {
         if (!it.produit_id || !it.qte) throw Object.assign(new Error("Ligne invalide (produit_id et qte requis)"), { status: 400 });
+        const dp = (it.date_peremption && String(it.date_peremption).trim()) || null;
         await c.query(
           "INSERT INTO bon_items(bon_id, produit_id, qte, prix_unitaire, date_peremption) VALUES($1,$2,$3,$4,$5)",
-          [b.id, it.produit_id, it.qte, it.prix_unitaire || 0, it.date_peremption || null]);
+          [b.id, it.produit_id, it.qte, it.prix_unitaire || 0, dp]);
       }
       const { rows: [b2] } = await c.query("SELECT * FROM bons WHERE id=$1", [b.id]);
       return b2;

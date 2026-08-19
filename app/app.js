@@ -59,7 +59,7 @@ async function restoreSession() {
   }
 }
 let cur = null;
-let DB = { boutique: { devise: "F" }, produits: [], familles: [], roles: [], recap: [], modes: [], caisses: [], droits: [], params: [], typesMv: [], lots: [], fournisseurs: [], commandes: [] };
+let DB = { boutique: { devise: "F" }, produits: [], familles: [], roles: [], recap: [], modes: [], caisses: [], droits: [], params: [], typesMv: [], lots: [], fournisseurs: [], commandes: [], clients: [] };
 let cart = [], camStream = null, scanTimer = null, curView = "accueil", ws = null, usbPrinter = null;
 
 const QUEUE_KEY = "gs_queue";
@@ -105,7 +105,10 @@ async function api(path, opts = {}) {
   }
   const data = await res.json().catch(() => ({}));
   if (res.ok && (!opts.method || opts.method === "GET")) sessionStorage.setItem("gs_cache_" + path, JSON.stringify(data));
-  if (res.status === 401) { doLogout(); throw new Error("Session expirée, reconnectez-vous"); }
+  if (res.status === 401) {
+    if (!path.startsWith("/auth/login")) doLogout();
+    throw new Error(data.error || "Session expirée, reconnectez-vous");
+  }
   if (!res.ok) throw new Error(data.error || "Erreur serveur");
   replayQueue().catch(() => { });
   return data;
@@ -191,9 +194,17 @@ function connectWS() {
     try {
       const m = JSON.parse(e.data);
       if (m && m.type) {
-    if (m.type === "versement_demande" || m.type === "versement_valide" || m.type === "versement_refuse" || m.type === "caisse") checkNotifVersements();
-    if (renderers[curView]) renderers[curView]().catch(() => { });
-  }
+        if (m.type === "versement_demande" || m.type === "versement_valide" || m.type === "versement_refuse" || m.type === "caisse" || m.type === "demande_annulation") {
+          checkNotifValidations();
+          if (m.type === "demande_annulation") {
+            const validateurNom = getParam("annulation_validateur") || "admin";
+            if (cur && (cur.role === "admin" || (cur.nom || "").toLowerCase() === validateurNom.toLowerCase())) {
+              toast("🔔 Nouvelle demande d'annulation de vente reçue !");
+            }
+          }
+        }
+        if (renderers[curView]) renderers[curView]().catch(() => { });
+      }
     } catch (err) { }
   };
   ws.onopen = () => setConn(true);
@@ -239,6 +250,7 @@ async function showApp() {
     DB.modes = await api("/modes-paiement");
     DB.droits = await api("/droits");
     DB.params = await api("/parametres");
+    try { DB.clients = await api("/clients"); } catch (e) {}
   } catch (e) { toast(e.message); }
   // Re-affiche le nom avec le libellé du rôle (chargé juste au-dessus)
   $("#curUser").textContent = `${cur.nom} - ${roleLabel(cur.role)}`;
@@ -246,7 +258,7 @@ async function showApp() {
   let target = null;
   try { target = localStorage.getItem("gs_curView"); } catch (e) {}
   if (!target || !renderers[target]) target = hasRight("R_RAPPORTS") ? "accueil" : "vente";
-  go(target); connectWS();
+  go(target); connectWS(); checkNotifValidations();
 }
 function roleLabel(code) {
   const r = DB.roles.find(x => x.code === code);
@@ -293,7 +305,7 @@ function go(view) {
 }
 
 /* ---------- chargement & erreur réseau ---------- */
-const VIEW_BOX = { accueil: "#dashCards", vente: "#venteGrid", releve: "#releveBox", produits: "#prodWrap", stock: "#stockWrap", point: "#pointBox", users: "#usersWrap", rapports: "#rapportBox", journal: "#journalWrap", params: "#paramsBox", depenses: "#depensesBox", versements: "#versementBox", credits: "#creditsBox" };
+const VIEW_BOX = { accueil: "#dashCards", vente: "#venteGrid", releve: "#releveBox", produits: "#prodWrap", stock: "#stockWrap", point: "#pointBox", users: "#usersWrap", rapports: "#rapportBox", journal: "#journalWrap", params: "#paramsBox", depenses: "#depensesBox", versements: "#versementBox", credits: "#creditsBox", clients: "#clientsBox" };
 function viewLoading(view) {
   const sel = VIEW_BOX[view];
   if (sel) { const el = $(sel); if (el) el.innerHTML = `<div class="empty">⏳ Chargement…</div>`; }
@@ -391,14 +403,52 @@ renderers.accueil = async function () {
         <div class="bar" style="height:${Math.max(4, Math.round(Number(j.ca) / max * 100))}%"></div>
         <span class="bar-lbl">${jourCourt(j)}</span>
       </div>`).join("")}</div>`;
+
+  // ===== ALERTES OPÉRATIONNELLES (Ruptures, Crédits, Annulations) =====
+  try {
+    const alertes = await api("/dashboard/alertes");
+    const alertesBox = $("#dashAlertes");
+    if (alertesBox) {
+      const items = [];
+      if (alertes.ruptures > 0) {
+        items.push(`<div class="alerte-item bad" data-goto="produits" style="cursor:pointer">🔴 <b>${alertes.ruptures}</b> produit(s) en <b>rupture de stock</b> — Cliquer pour voir</div>`);
+      }
+      if (alertes.faibles > 0) {
+        items.push(`<div class="alerte-item warn" data-goto="produits" style="cursor:pointer">🟠 <b>${alertes.faibles}</b> produit(s) en <b>stock faible</b> (sous le seuil minimum)</div>`);
+      }
+      if (alertes.credits_ouverts > 0) {
+        items.push(`<div class="alerte-item info" data-goto="credits" style="cursor:pointer">💳 <b>${alertes.credits_ouverts}</b> crédit(s) client(s) <b>non soldé(s)</b> — Cliquer pour recouvrer</div>`);
+      }
+      if (alertes.annulations_en_attente > 0) {
+        items.push(`<div class="alerte-item warn" data-goto="versements" style="cursor:pointer">❌ <b>${alertes.annulations_en_attente}</b> demande(s) d'annulation <b>en attente de validation</b></div>`);
+      }
+      if (items.length === 0) {
+        alertesBox.innerHTML = `<div class="alerte-item ok">✅ Aucune alerte opérationnelle — Tout est sous contrôle</div>`;
+      } else {
+        alertesBox.innerHTML = items.join("");
+        alertesBox.querySelectorAll("[data-goto]").forEach(el => {
+          el.addEventListener("click", () => go(el.dataset.goto));
+        });
+      }
+    }
+  } catch (e) { /* alertes non critiques */ }
 };
 
 /* ---------- vente ---------- */
 let venteFilter = "";
 renderers.vente = async function () {
-  try { DB.produits = await api("/produits"); } catch (e) { toast(e.message); return; }
-  try { DB.caisse = await api("/caisse/moi"); } catch (e) { DB.caisse = null; }
+  try {
+    const [prods, clts, caisse] = await Promise.all([
+      api("/produits"),
+      api("/clients").catch(() => []),
+      api("/caisse/moi").catch(() => null)
+    ]);
+    DB.produits = prods;
+    DB.clients = clts;
+    DB.caisse = caisse;
+  } catch (e) { toast(e.message); return; }
   fillModeSelect();
+  populateCartClients();
   const selF = $("#venteFamille");
   const curF = selF.value;
   selF.innerHTML = `<option value="">Toutes les familles</option>` + [...new Set(DB.produits.map(p => p.famille).filter(Boolean))].map(fm => `<option ${curF === fm ? "selected" : ""}>${esc(fm)}</option>`).join("");
@@ -596,28 +646,201 @@ function renderVenteGrid() {
         ${p.photo ? `<img src="${p.photo}" style="width:100%;height:64px;object-fit:cover;border-radius:8px;margin-bottom:6px">` : ""}
         <div class="pn">${esc(p.nom)}</div>
         <div class="pp">${money(p.prix_vente)}</div>
-        <div class="ps"><span class="stock-badge ${Number(p.stock) <= 0 ? "out" : Number(p.stock) <= Number(p.stock_min) ? "low" : "ok"}"><span class="dot"></span>${hasRight("R_RAPPORTS") ? `Stock : ${p.stock}${p.stock_min ? " · min " + p.stock_min : ""}` : (Number(p.stock) <= 0 ? "Rupture" : Number(p.stock) <= Number(p.stock_min) ? "Stock faible" : "En stock")}</span></div>
+        <div class="ps"><span class="stock-badge ${Number(p.stock) <= 0 ? "out" : Number(p.stock) <= Number(p.stock_min) ? "low" : "ok"}"><span class="dot"></span>Stock : ${p.stock}${p.stock_min ? " · min " + p.stock_min : ""}</span></div>
       </div>`).join(""));
   $$("#venteGrid .prod-card").forEach(c => c.addEventListener("click", () => {
     const p = produitById(c.dataset.pid);
-    if (p && Number(p.stock) > 0) { addToCart(p.id, 1); c.classList.add("flash"); setTimeout(() => c.classList.remove("flash"), 350); } else toast("Stock insuffisant");
+    if (p && Number(p.stock) > 0) { addToCart(p.id, 1); animateFlyToCart(c); c.classList.add("flash"); setTimeout(() => c.classList.remove("flash"), 350); } else toast("Stock insuffisant");
   }));
   $$("#venteGrid .recent-chip").forEach(b => b.addEventListener("click", () => {
     const p = produitById(b.dataset.pid);
     if (p && Number(p.stock) > 0) { addToCart(p.id, 1); } else toast("Stock insuffisant");
   }));
 }
+/* --- Assistant audio & monnaie --- */
+function playBeep(success = true) {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(success ? 880 : 220, ctx.currentTime);
+    gain.gain.setValueAtTime(0.12, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.12);
+    if (navigator.vibrate) navigator.vibrate(success ? 40 : [80, 50, 80]);
+  } catch (e) { }
+}
+
+function breakdownMonnaie(rendu) {
+  if (!rendu || rendu <= 0) return "";
+  const denoms = [10000, 5000, 2000, 1000, 500, 200, 100, 50, 25];
+  let rest = Math.round(rendu);
+  const parts = [];
+  for (const d of denoms) {
+    if (rest >= d) {
+      const count = Math.floor(rest / d);
+      rest %= d;
+      parts.push(count + " × " + (d >= 1000 ? (d / 1000) + "k" : d));
+    }
+  }
+  return parts.length ? parts.join(", ") : "";
+}
+
+/* --- Tickets en attente (multi-paniers) --- */
+let heldCarts = [];
+try { heldCarts = JSON.parse(localStorage.getItem("gs_held_carts") || "[]"); } catch (e) { heldCarts = []; }
+function saveHeldCarts() {
+  localStorage.setItem("gs_held_carts", JSON.stringify(heldCarts));
+  renderHeldCarts();
+}
+
+function holdCart() {
+  if (cart.length === 0) { toast("Panier vide"); return; }
+  const defaultLabel = "Ticket #" + (heldCarts.length + 1) + " (" + cart.reduce((s, l) => s + l.qte, 0) + " art.)";
+  askPrompt("⏸️ Mettre le ticket en attente", defaultLabel, val => {
+    const nom = String(val || defaultLabel).trim();
+    heldCarts.push({
+      id: uid(),
+      nom,
+      items: [...cart],
+      remise: $("#cartRemise") ? $("#cartRemise").value : 0,
+      mode: $("#cartMode") ? $("#cartMode").value : "especes",
+      recu: $("#cartRecu") ? $("#cartRecu").value : 0,
+      date: new Date().toISOString()
+    });
+    cart = [];
+    if ($("#cartRemise")) $("#cartRemise").value = 0;
+    if ($("#cartRecu")) $("#cartRecu").value = 0;
+    saveHeldCarts();
+    renderCart();
+    toast("Ticket mis en attente ⏸️");
+  });
+}
+
+function resumeCart(id) {
+  const idx = heldCarts.findIndex(h => h.id === id);
+  if (idx === -1) return;
+  const held = heldCarts[idx];
+  if (cart.length > 0) {
+    askConfirm("Remplacer le panier actif ?", "Un panier est déjà en cours. Voulez-vous le remplacer par le ticket « " + esc(held.nom) + " » ?", () => {
+      cart = held.items || [];
+      if ($("#cartRemise")) $("#cartRemise").value = held.remise || 0;
+      if ($("#cartMode")) $("#cartMode").value = held.mode || "especes";
+      if ($("#cartRecu")) $("#cartRecu").value = held.recu || 0;
+      heldCarts.splice(idx, 1);
+      saveHeldCarts();
+      renderCart();
+      toast("Ticket repris ▶️");
+    });
+    return;
+  }
+  cart = held.items || [];
+  if ($("#cartRemise")) $("#cartRemise").value = held.remise || 0;
+  if ($("#cartMode")) $("#cartMode").value = held.mode || "especes";
+  if ($("#cartRecu")) $("#cartRecu").value = held.recu || 0;
+  heldCarts.splice(idx, 1);
+  saveHeldCarts();
+  renderCart();
+  toast("Ticket repris ▶️");
+}
+
+function removeHeldCart(id) {
+  heldCarts = heldCarts.filter(h => h.id !== id);
+  saveHeldCarts();
+  toast("Ticket en attente supprimé");
+}
+
+function renderHeldCarts() {
+  const box = $("#heldCartsWrap");
+  if (!box) return;
+  if (!heldCarts.length) {
+    box.innerHTML = "";
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = `<div class="held-bar"><span class="held-title">⏸️ En attente (${heldCarts.length}) :</span>`
+    + heldCarts.map(h => {
+      const tot = (h.items || []).reduce((s, l) => s + l.prix * l.qte, 0);
+      return `<button type="button" class="held-chip" data-held="${h.id}"><b>${esc(h.nom)}</b> <span>${money(tot)}</span><span class="held-del" data-helddel="${h.id}">✕</span></button>`;
+    }).join("")
+    + `</div>`;
+  box.querySelectorAll("[data-held]").forEach(b => {
+    b.addEventListener("click", e => {
+      if (e.target.classList.contains("held-del")) return;
+      resumeCart(b.dataset.held);
+    });
+  });
+  box.querySelectorAll("[data-helddel]").forEach(b => {
+    b.addEventListener("click", e => {
+      e.stopPropagation();
+      removeHeldCart(b.dataset.helddel);
+    });
+  });
+}
+
 function addToCart(pid, qte) {
-  const p = produitById(pid); if (!p) return;
+  const p = produitById(pid);
+  if (!p) { playBeep(false); return; }
   const line = cart.find(l => String(l.produitId) === String(pid));
   const now = line ? line.qte : 0;
-  if (now + qte > Number(p.stock)) { toast("Stock insuffisant"); return; }
-  if (line) line.qte += qte; else cart.push({ produitId: p.id, nom: p.nom, prix: Number(p.prix_vente), prixAchat: Number(p.prix_achat), qte });
+  if (now + qte > Number(p.stock)) {
+    playBeep(false);
+    toast("Stock insuffisant (" + p.nom + " : " + p.stock + " dispo)");
+    return;
+  }
+  if (line) line.qte += qte;
+  else cart.push({ produitId: p.id, nom: p.nom, prix: Number(p.prix_vente), prixAchat: Number(p.prix_achat), qte });
+  playBeep(true);
   renderCart();
   const ct = $("#cartTotal");
   if (ct) { ct.classList.add("pop"); setTimeout(() => ct.classList.remove("pop"), 300); }
 }
+
+function populateCartClients() {
+  const clientSel = $("#cartClientSel");
+  if (!clientSel) return;
+  const curCid = clientSel.value;
+  const clients = DB.clients || [];
+  clientSel.innerHTML = '<option value="">👤 Client passager (Comptoir)</option>' +
+    clients.filter(c => c.actif).map(c => `
+      <option value="${c.id}" ${String(c.id) === String(curCid) ? "selected" : ""}>
+        ${esc(c.nom)} (⭐ ${c.points || 0} pts)
+      </option>
+    `).join('');
+  updateCartClientInfo();
+}
+
+function updateCartClientInfo() {
+  const sel = $("#cartClientSel");
+  const info = $("#cartClientInfo");
+  if (!sel || !info) return;
+  const cid = sel.value;
+  if (!cid) {
+    info.classList.add("hidden");
+    info.innerHTML = "";
+    return;
+  }
+  const cl = (DB.clients || []).find(c => String(c.id) === String(cid));
+  if (!cl) {
+    info.classList.add("hidden");
+    return;
+  }
+  info.classList.remove("hidden");
+  const solde = Number(cl.solde_credit || 0);
+  info.innerHTML = `⭐ Points : <b>${cl.points || 0} pts</b> · Plafond : <b>${money(cl.plafond_credit)}</b>` +
+    (solde > 0 ? ` · <span style="color:var(--danger)">Dette : ${money(solde)}</span>` : "");
+}
+
 function renderCart() {
+  renderHeldCarts();
+  populateCartClients();
   const wrap = $("#cartLines");
   if (cart.length === 0) { wrap.innerHTML = `<div class="empty">Panier vide - cliquez sur un produit ou scannez un code-barres</div>`; }
   else {
@@ -668,7 +891,9 @@ function renderCart() {
     const recu = Number($("#cartRecu").value) || 0;
     const rendu = $("#cartRendu");
     if (net > 0 && recu >= net) {
-      rendu.textContent = "Rendu : " + money(recu - net);
+      const diff = recu - net;
+      const bkd = breakdownMonnaie(diff);
+      rendu.innerHTML = "Rendu : <b>" + money(diff) + "</b>" + (bkd ? `<div class="monnaie-hint">💡 Rendu conseillé : ${esc(bkd)}</div>` : "");
       rendu.className = "ok";
     } else if (net > 0 && recu > 0 && recu < net) {
       rendu.textContent = "Manque : " + money(net - recu);
@@ -705,23 +930,24 @@ async function encaisser() {
   if (!DB.caisse) { toast("Ouvrez votre caisse d'abord"); return; }
   const total = cart.reduce((s, l) => s + l.prix * l.qte, 0);
   const remise = clampRemise(total, Math.max(0, Number($("#cartRemise").value) || 0));
-  const net = total - remise;
-  if (net <= 0) { toast("Montant invalide"); return; }
+  const net = Math.max(0, total - remise);
+  if (net < 0 || (net === 0 && remise === 0)) { toast("Montant invalide"); return; }
   const mode = $("#cartMode").value;
   let recu = net;
   if (mode === "credit") {
     recu = 0;
   } else if (modeEspeces(mode)) {
-    recu = Number($("#cartRecu").value) || 0;
+    recu = net === 0 ? 0 : (Number($("#cartRecu").value) || 0);
     if (recu < net) { toast("Montant reçu insuffisant"); return; }
   }
   const nbArt = cart.reduce((s, l) => s + l.qte, 0);
   const doVente = async clientNom => {
     const btn = $("#encaisserBtn"); btn.disabled = true; btn.textContent = "Encaissement...";
+    const clientId = $("#cartClientSel") ? $("#cartClientSel").value || null : null;
     try {
       const v = await api("/ventes", {
         method: "POST",
-        body: JSON.stringify({ items: cart.map(l => ({ produitId: l.produitId, qte: l.qte })), remise, mode, recu, client_nom: clientNom, ref: "T" + uid().toUpperCase() })
+        body: JSON.stringify({ items: cart.map(l => ({ produitId: l.produitId, qte: l.qte })), remise, mode, recu, client_id: clientId, client_nom: clientNom, ref: "T" + uid().toUpperCase() })
       });
       pushRecents(cart.map(l => l.produitId));
       cart = []; $("#cartRemise").value = 0; $("#cartRecu").value = 0;
@@ -734,6 +960,12 @@ async function encaisser() {
     btn.disabled = false; btn.textContent = "💵 Encaisser";
   };
   if (mode === "credit") {
+    const sel = $("#cartClientSel");
+    const cl = sel && sel.value ? (DB.clients || []).find(c => String(c.id) === String(sel.value)) : null;
+    if (cl) {
+      askConfirm("Confirmer le crédit", `Accorder un crédit de <b>${money(net)}</b> au client <b>${esc(cl.nom)}</b> ?<br><span class="muted">Plafond autorisé : <b>${money(cl.plafond_credit)}</b> · Encours actuel : <b>${money(cl.solde_credit || 0)}</b></span>`, () => doVente(cl.nom), { okLabel: "Valider le crédit" });
+      return;
+    }
     askPrompt("🤝 Vente à crédit", "", val => {
       const nom = String(val || "").trim();
       if (!nom) { toast("Nom du client obligatoire — vente annulée"); return; }
@@ -767,35 +999,245 @@ ${Number(v.rendu) ? `Rendu : ${money(v.rendu)}` : ""}
 ${esc(b.pied)}
 ${esc(b.email)} - ${esc(b.horaires)}`;
 }
-function showTicket(v) {
-  const canAnnuler = hasRight("R_RAPPORTS");
-  openModal(`<h3>✅ Vente enregistrée - ${v.numero}</h3>
-    <div class="ticket-preview">${esc(ticketHTML(v))}</div>
-    <div class="row" style="margin-top:12px">
-      <button class="btn primary grow" id="printTicketBtn">🖨️ Imprimer le ticket</button>
+
+function promptAnnulerVente(v, onDone) {
+  const validateurNom = getParam("annulation_validateur") || "admin";
+  const isAuthorized = cur && (cur.role === "admin" || (cur.nom || "").toLowerCase() === validateurNom.toLowerCase());
+
+  const modalHTML = `
+    <h3>↩️ Annulation du ticket ${esc(v.numero)}</h3>
+    <p class="muted">Montant du ticket : <b>${money(v.net)}</b> (${(v.items || []).length} article(s))</p>
+    <div class="field">
+      <label>Motif d'annulation *</label>
+      <select id="annulMotifSel">
+        <option value="Erreur de saisie / quantité">Erreur de saisie / quantité</option>
+        <option value="Erreur de moyen de paiement">Erreur de moyen de paiement</option>
+        <option value="Client parti sans payer">Client parti sans payer</option>
+        <option value="Produit défectueux / refusé">Produit défectueux / refusé</option>
+        <option value="autre">Autre motif...</option>
+      </select>
+      <input type="text" id="annulMotifTxt" class="hidden" placeholder="Précisez le motif..." style="margin-top:6px">
+    </div>
+
+    ${!isAuthorized ? `
+      <!-- OPTION 1 : À DISTANCE -->
+      <div style="background:rgba(14,116,144,.08);padding:12px;border-radius:8px;margin:12px 0 8px;border:1px solid rgba(14,116,144,.3)">
+        <p style="margin:0 0 4px;font-weight:700;color:var(--primary)">📲 Option 1 : Demande à distance (Recommandé)</p>
+        <p style="margin:0 0 10px;font-size:12px" class="muted">Envoie une notification immédiate à <b>${esc(validateurNom)}</b> pour validation sur son écran / téléphone.</p>
+        <button class="btn primary small block" id="annulSendRemoteBtn" style="font-size:13px;padding:9px">📲 Envoyer la demande à ${esc(validateurNom)}</button>
+      </div>
+
+      <!-- OPTION 2 : SUR PLACE -->
+      <details style="margin-top:10px;border-top:1px dashed var(--border);padding-top:8px">
+        <summary style="font-size:12px;color:var(--muted);cursor:pointer;user-select:none">⚡ Option 2 : Superviseur présent sur place (Validation immédiate) ▾</summary>
+        <div style="background:rgba(239,68,68,.08);padding:10px;border-radius:8px;margin:8px 0;border:1px dashed var(--danger)">
+          <p style="margin:0 0 4px;font-weight:700;color:var(--danger)">🔒 Mot de passe de « ${esc(validateurNom)} » ou Admin</p>
+          <label class="field" style="margin-bottom:8px">
+            <input type="password" id="annulMgrMdp" placeholder="Mot de passe" autocomplete="current-password">
+          </label>
+          <button class="btn danger small block" id="annulLocalBtn">⚡ Valider sur place immédiatement</button>
+        </div>
+      </details>
+    ` : `
+      <div class="row" style="margin-top:14px">
+        <button class="btn danger grow" id="annulDirectBtn">🗑️ Confirmer l'annulation immédiate</button>
+        <button class="btn ghost grow" onclick="closeModal()">Abandonner</button>
+      </div>
+    `}
+    <div class="row" style="margin-top:10px">
       <button class="btn ghost grow" onclick="closeModal()">Fermer</button>
-      ${canAnnuler ? `<button class="btn danger grow" id="annulerVenteBtn">↩️ Annuler la vente</button>` : ""}
-    </div>`);
-  $("#printTicketBtn").addEventListener("click", () => printTicket(v));
-  if (canAnnuler) {
-    $("#annulerVenteBtn").addEventListener("click", () => {
-      askConfirm("Annuler la vente", `Annuler le ticket <b>${esc(v.numero)}</b> de <b>${money(v.net)}</b> ?<br><span class="muted">Le stock sera restauré et la vente supprimée définitivement.</span>`, async () => {
-        try {
-          await api("/ventes/" + v.id + "/annuler", { method: "POST" });
-          closeModal();
-          toast("Vente annulée, stock restauré ↩️");
-          renderers.vente().catch(() => { });
-          if (curView === "releve") renderers.releve().catch(() => { });
-        } catch (e) { toast(e.message); }
-      }, { icone: "⚠️", danger: true, okLabel: "Oui, annuler" });
+    </div>
+  `;
+
+  openModal(modalHTML);
+
+  const sel = $("#annulMotifSel");
+  const txt = $("#annulMotifTxt");
+  if (sel && txt) {
+    sel.addEventListener("change", () => {
+      txt.classList.toggle("hidden", sel.value !== "autre");
+      if (sel.value === "autre") txt.focus();
     });
   }
+
+  const getMotif = () => {
+    let m = sel.value === "autre" ? txt.value.trim() : sel.value;
+    if (!m) { toast("Précisez le motif d'annulation"); return null; }
+    return m;
+  };
+
+  // Option 1 : Envoi à distance
+  const remoteBtn = $("#annulSendRemoteBtn");
+  if (remoteBtn) {
+    remoteBtn.addEventListener("click", async () => {
+      const motif = getMotif();
+      if (!motif) return;
+      remoteBtn.disabled = true; remoteBtn.textContent = "Transmission en cours...";
+      try {
+        await api("/ventes/" + v.id + "/demander-annulation", { method: "POST", body: JSON.stringify({ motif }) });
+        closeModal();
+        toast("Demande d'annulation transmise à " + validateurNom + " 📲");
+        if (onDone) onDone();
+        if (curView === "releve") renderers.releve().catch(() => {});
+      } catch (e) {
+        remoteBtn.disabled = false; remoteBtn.textContent = "📲 Envoyer la demande à " + validateurNom;
+        toast(e.message);
+      }
+    });
+  }
+
+  // Option 2 : Sur place avec mot de passe
+  const localBtn = $("#annulLocalBtn");
+  if (localBtn) {
+    localBtn.addEventListener("click", async () => {
+      const motif = getMotif();
+      if (!motif) return;
+      const mgrMdp = $("#annulMgrMdp") ? $("#annulMgrMdp").value : "";
+      if (!mgrMdp) { toast("Mot de passe du validateur (« " + validateurNom + " ») obligatoire"); return; }
+      localBtn.disabled = true; localBtn.textContent = "Annulation en cours...";
+      try {
+        const res = await api("/ventes/" + v.id + "/annuler", { method: "POST", body: JSON.stringify({ motif, manager_nom: validateurNom, manager_mdp: mgrMdp }) });
+        closeModal();
+        toast("Vente annulée avec succès (Validé par " + (res.autorise_par || "Gérance") + ") ↩️");
+        if (onDone) onDone();
+        renderers.vente().catch(() => {});
+        if (curView === "releve") renderers.releve().catch(() => {});
+      } catch (e) {
+        localBtn.disabled = false; localBtn.textContent = "⚡ Valider sur place immédiatement";
+        toast(e.message);
+      }
+    });
+  }
+
+  // Option 3 : Responsable / Admin direct
+  const directBtn = $("#annulDirectBtn");
+  if (directBtn) {
+    directBtn.addEventListener("click", async () => {
+      const motif = getMotif();
+      if (!motif) return;
+      directBtn.disabled = true; directBtn.textContent = "Annulation en cours...";
+      try {
+        const res = await api("/ventes/" + v.id + "/annuler", { method: "POST", body: JSON.stringify({ motif }) });
+        closeModal();
+        toast("Vente annulée avec succès ↩️");
+        if (onDone) onDone();
+        renderers.vente().catch(() => {});
+        if (curView === "releve") renderers.releve().catch(() => {});
+      } catch (e) {
+        directBtn.disabled = false; directBtn.textContent = "🗑️ Confirmer l'annulation immédiate";
+        toast(e.message);
+      }
+    });
+  }
+}
+
+function showTicket(v) {
+  openModal(`
+    <div class="success-animation">
+      <svg class="checkmark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52">
+        <circle class="checkmark__circle" cx="26" cy="26" r="25" fill="none"/>
+        <path class="checkmark__check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
+      </svg>
+    </div>
+    <h3 style="text-align:center;margin:4px 0 8px">Vente enregistrée — ${esc(v.numero)}</h3>
+    <div class="ticket-preview">${esc(ticketHTML(v))}</div>
+    <div class="row wrap" style="margin-top:12px;gap:8px">
+      <button class="btn primary grow" id="printTicketBtn">🖨️ Imprimer</button>
+      <button class="btn btn-whatsapp grow" id="whatsappTicketBtn">📲 WhatsApp</button>
+      <button class="btn ghost grow" onclick="closeModal()">Fermer</button>
+    </div>
+    <details style="margin-top:14px;border-top:1px solid var(--border);padding-top:8px">
+      <summary style="font-size:12px;color:var(--muted);cursor:pointer;user-select:none;text-align:right">⚙️ Options avancées / Litige ▾</summary>
+      <div style="margin-top:8px;padding:10px;background:rgba(239,68,68,0.05);border-radius:8px;border:1px dashed rgba(239,68,68,0.3);text-align:left">
+        <p style="font-size:11px;margin:0 0 8px;color:var(--muted)">⚠️ L'annulation supprime la vente et réintègre les articles en stock sous la validation du responsable désigné.</p>
+        <button class="btn danger small block" id="annulerVenteBtn" style="font-size:12px;padding:8px">⚠️ Demander l'annulation exceptionnelle</button>
+      </div>
+    </details>
+  `);
+  $("#whatsappTicketBtn").addEventListener("click", function() { sendTicketWhatsApp(v); });
+  $("#printTicketBtn").addEventListener("click", () => printTicket(v));
+  $("#annulerVenteBtn").addEventListener("click", () => promptAnnulerVente(v));
   if (usbPrinter) {
     const tb = document.createElement("button");
     tb.className = "btn success grow"; tb.textContent = "🧾 Imprimante thermique";
     tb.addEventListener("click", () => printThermal(v));
     $("#printTicketBtn").parentElement.appendChild(tb);
   }
+}
+
+
+/* ---------- WhatsApp & Animations ---------- */
+function formatWhatsAppTicket(v) {
+  const b = DB.boutique || {};
+  let msg = "*🏪 " + (b.nom || "Boutique") + "*\n";
+  if (b.tel) msg += "📞 Tél : " + b.tel + "\n";
+  if (b.adresse) msg += "📍 " + b.adresse + "\n";
+  msg += "--------------------------------\n";
+  msg += "*🧾 TICKET N° : " + v.numero + "*\n";
+  msg += "📅 Date : " + fmtDate(v.date || new Date()) + "\n";
+  if (v.client_nom) msg += "👤 Client : *" + v.client_nom + "*\n";
+  msg += "--------------------------------\n";
+  (v.items || []).forEach(function(it) {
+    msg += "• " + it.nom + " : " + it.qte + " × " + money(it.prix) + " = *" + money(Number(it.qte) * Number(it.prix)) + "*\n";
+  });
+  msg += "--------------------------------\n";
+  msg += "*TOTAL : " + money(v.total) + "*\n";
+  if (Number(v.remise) > 0) msg += "Remise : -" + money(v.remise) + "\n";
+  msg += "*NET PAYÉ : " + money(v.net) + "*\n";
+  msg += "Mode de règlement : " + (modeLabel(v.mode) || v.mode) + "\n";
+  if (Number(v.recu) > 0) msg += "Reçu : " + money(v.recu) + " | Rendu : " + money(v.rendu) + "\n";
+  if (v.points_gagnes) msg += "⭐ Points gagnés : +" + v.points_gagnes + " pts\n";
+  msg += "--------------------------------\n";
+  msg += (b.pied || "Merci de votre visite et à bientôt !");
+  return msg;
+}
+
+function sendTicketWhatsApp(v) {
+  const msg = formatWhatsAppTicket(v);
+  let defTel = "";
+  if (v.client_id) {
+    const cl = (DB.clients || []).find(function(c) { return String(c.id) === String(v.client_id); });
+    if (cl && cl.tel) defTel = String(cl.tel).replace(/[^0-9]/g, "");
+  }
+  askPrompt("📲 Numéro WhatsApp du client (avec indicatif ex: 221...)", defTel || "221", function(num) {
+    if (!num) return;
+    const clean = num.replace(/[^0-9]/g, "");
+    if (clean.length < 8) { toast("Numéro de téléphone incomplet"); return; }
+    const url = "https://wa.me/" + clean + "?text=" + encodeURIComponent(msg);
+    window.open(url, "_blank");
+    toast("Ouverture de WhatsApp 📲");
+  });
+}
+
+function animateFlyToCart(card) {
+  if (!card) return;
+  const rect = card.getBoundingClientRect();
+  const cartEl = document.querySelector(".cart") || document.getElementById("cartTotal");
+  if (!cartEl) return;
+  const cartRect = cartEl.getBoundingClientRect();
+
+  const particle = document.createElement("div");
+  particle.className = "flying-particle";
+  particle.textContent = "+1";
+  particle.style.left = (rect.left + rect.width / 2 - 12) + "px";
+  particle.style.top = (rect.top + rect.height / 2 - 12) + "px";
+  document.body.appendChild(particle);
+
+  requestAnimationFrame(function() {
+    particle.style.left = (cartRect.left + 24) + "px";
+    particle.style.top = (cartRect.top + 24) + "px";
+    particle.style.opacity = "0.2";
+    particle.style.transform = "scale(0.5)";
+  });
+
+  setTimeout(function() {
+    particle.remove();
+    const cPanel = document.querySelector(".cart");
+    if (cPanel) {
+      cPanel.classList.add("cart-bounce");
+      setTimeout(function() { cPanel.classList.remove("cart-bounce"); }, 350);
+    }
+  }, 450);
 }
 
 /* ---------- scan ---------- */
@@ -914,14 +1356,18 @@ renderers.releve = async function () {
       ${caisse ? `<div class="card"><div class="k">Ma caisse - ouverte depuis ${new Date(caisse.ouverte_le).toLocaleTimeString("fr-FR")}</div><div class="v" style="font-size:14px">Fonds ${money(caisse.fonds_initial)} · Versé ${money(caisse.verse_total)} · </b></div></div>` : `<div class="card"><div class="k">Ma caisse</div><div class="v" style="font-size:14px">Aucune caisse ouverte - ouvrez-la dans l'onglet Caisse</div></div>`}
     </div>
     ${vts.length > 0 ? pgBar("releve", vts.length, "ticket(s)") : ""}
-    <div class="table-wrap"><table><tr><th>Ticket</th><th>Heure</th><th>Articles</th><th>Total</th><th>Paiement</th></tr>` +
-    (vts.length === 0 ? `<tr><td colspan="5" class="empty">Aucune vente aujourd'hui</td></tr>` :
-      pgSlice("releve", vts).part.map(v => `<tr><td>${v.numero}</td><td>${fmtDate(v.date)}</td><td class="num">${(v.items || []).reduce((s, i) => s + Number(i.qte), 0)}</td><td class="num">${money(v.net)}</td><td>${esc(modeLabel(v.mode))}</td></tr>`).join("")) +
+    <div class="table-wrap"><table><tr><th>Ticket</th><th>Heure</th><th>Articles</th><th>Total</th><th>Paiement</th><th></th></tr>` +
+    (vts.length === 0 ? `<tr><td colspan="6" class="empty">Aucune vente aujourd'hui</td></tr>` :
+      pgSlice("releve", vts).part.map(v => `<tr><td><b>${esc(v.numero)}</b></td><td>${fmtDate(v.date)}</td><td class="num">${(v.items || []).reduce((s, i) => s + Number(i.qte), 0)}</td><td class="num">${money(v.net)}</td><td>${esc(modeLabel(v.mode))}</td><td><button class="btn small" data-releveticket="${v.id}">🧾 Ticket</button></td></tr>`).join("")) +
     `</table></div>`;
   const expBtn = $("#releveExport");
   if (expBtn) expBtn.addEventListener("click", () => {
     downloadCSV("releve-" + todayKey() + ".csv", [["Ticket","Heure","Articles","Total","Paiement"]].concat(vts.map(v => [v.numero, fmtDate(v.date), String((v.items || []).reduce((s, i) => s + Number(i.qte), 0)), String(v.net), modeLabel(v.mode)])));
   });
+  $$("#releveBox [data-releveticket]").forEach(b => b.addEventListener("click", () => {
+    const target = vts.find(x => String(x.id) === String(b.dataset.releveticket));
+    if (target) showTicket(target);
+  }));
 };
 
 /* ---------- produits ---------- */
@@ -993,9 +1439,41 @@ function prodForm(p) {
   p = p || { famille: "", code: "", prix_achat: 0, prix_vente: 0, stock: 0, stock_min: 0, actif: true };
   openModal(`<h3>${isNew ? "Nouveau produit" : "Modifier : " + esc(p.nom)}</h3>
     <label class="field">Nom <input id="pfNom" value="${esc(p.nom || "")}"></label>
-    <div class="row"><label class="field grow">Famille <input id="pfFamille" list="famList" value="${esc(p.famille || "")}"></label>
+    <div class="row">
+      <label class="field grow">Famille <input id="pfFamille" list="famList" value="${esc(p.famille || "")}"></label>
       <datalist id="famList">${(DB.familles || []).map(f => `<option value="${esc(f.nom)}">`).join("")}</datalist>
-      <label class="field grow">Code-barres <input id="pfCode" value="${esc(p.code || "")}" placeholder="6181490000011"></label></div>
+      <label class="field grow">Code-barres <input id="pfCode" value="${esc(p.code || "")}" placeholder="6181490000011"></label>
+    </div>
+    <div class="row">
+      <label class="field grow">Unité de mesure
+        <select id="pfUnite">
+          <option value="pcs" ${(p.unite || "pcs") === "pcs" ? "selected" : ""}>Pièce (pcs)</option>
+          <option value="carton" ${p.unite === "carton" ? "selected" : ""}>Carton</option>
+          <option value="paquet" ${p.unite === "paquet" ? "selected" : ""}>Paquet</option>
+          <option value="boite" ${p.unite === "boite" ? "selected" : ""}>Boîte</option>
+          <option value="kg" ${p.unite === "kg" ? "selected" : ""}>Kilogramme (kg)</option>
+          <option value="L" ${p.unite === "L" ? "selected" : ""}>Litre (L)</option>
+          <option value="m" ${p.unite === "m" ? "selected" : ""}>Mètre (m)</option>
+        </select>
+      </label>
+      <label class="field grow">Emplacement / Rayon
+        <input id="pfEmplacement" value="${esc(p.emplacement || "")}" placeholder="ex: Rayon A, Étagère 3">
+      </label>
+    </div>
+    <details style="margin:4px 0 8px;border:1px solid var(--border);border-radius:8px;padding:8px">
+      <summary style="font-size:12px;font-weight:700;color:var(--primary);cursor:pointer">📦 Déconditionnement (Lier à un Carton parent) ▾</summary>
+      <div class="row" style="margin-top:6px">
+        <label class="field grow">Produit parent (Carton source)
+          <select id="pfParent">
+            <option value="">-- Aucun (produit standard) --</option>
+            ${(DB.produits || []).filter(x => String(x.id) !== String(p.id)).map(x => '<option value="' + x.id + '"' + (String(x.id) === String(p.parent_produit_id) ? ' selected' : '') + '>' + esc(x.nom) + ' (' + (x.unite || 'carton') + ')</option>').join('')}
+          </select>
+        </label>
+        <label class="field grow">Unités par carton
+          <input id="pfQteParent" type="number" min="1" value="${p.qte_par_parent || 1}">
+        </label>
+      </div>
+    </details>
     <div class="panel" style="margin-top:4px">
       <b style="font-size:13px">📷 Photo du produit</b>
       <div id="pfPhotoPrev" style="margin-top:6px">${p.photo ? `<img src="${p.photo}" style="max-height:110px;border-radius:8px">` : `<span class="muted">Aucune photo</span>`}</div>
@@ -1048,7 +1526,21 @@ function prodForm(p) {
     const pa = Number($("#pfPA").value) || 0, pv = Number($("#pfPV").value) || 0;
     if (!nom) { toast("Le nom est obligatoire"); return; }
     if (pv <= 0) { toast("Le prix de vente est obligatoire"); return; }
-    const body = { nom, famille: $("#pfFamille").value.trim(), code: $("#pfCode").value.trim(), prix_achat: pa, prix_vente: pv, stock_min: Number($("#pfMin").value) || 0, actif: $("#pfActif").checked, photo: prodPhoto, gere_par_lot: $("#pfLot").checked };
+    const body = {
+      nom,
+      famille: $("#pfFamille").value.trim(),
+      code: $("#pfCode").value.trim(),
+      prix_achat: pa,
+      prix_vente: pv,
+      stock_min: Number($("#pfMin").value) || 0,
+      actif: $("#pfActif").checked,
+      photo: prodPhoto,
+      gere_par_lot: $("#pfLot").checked,
+      unite: $("#pfUnite") ? $("#pfUnite").value : 'pcs',
+      emplacement: $("#pfEmplacement") ? $("#pfEmplacement").value.trim() : null,
+      parent_produit_id: $("#pfParent") && $("#pfParent").value ? Number($("#pfParent").value) : null,
+      qte_par_parent: $("#pfQteParent") ? Number($("#pfQteParent").value) || 1 : 1
+    };
     try {
       if (isNew) {
         body.stock = Number($("#pfStock").value) || 0;
@@ -1108,6 +1600,7 @@ function renderStProduits(box, prods) {
         <td class="num">${p.stock_min}</td>
         <td><span class="badge ${Number(p.stock) <= 0 ? "bad" : Number(p.stock) <= Number(p.stock_min) ? "warn" : "ok"}">${Number(p.stock) <= 0 ? "Rupture" : Number(p.stock) <= Number(p.stock_min) ? "Stock bas" : "OK"}</span></td>
         <td class="sticky-r"><div class="actions actions-grid">
+          ${p.parent_produit_id ? `<button class="btn small primary" data-mv="decond" data-pid="${p.id}" title="Déconditionner depuis le carton">📦 Déconditionner</button>` : ""}
           <button class="btn small" data-mv="entree" data-pid="${p.id}">⬆️ Entrée</button>
           <button class="btn small" data-mv="ajust" data-pid="${p.id}">🔧 Ajuster</button>
           <button class="btn small" data-mv="inv" data-pid="${p.id}">🔢 Inventaire</button>
@@ -1124,7 +1617,8 @@ function renderStProduits(box, prods) {
   });
   $$("#stBody [data-mv]").forEach(b => b.addEventListener("click", () => {
     const p = produitById(b.dataset.pid);
-    if (b.dataset.mv === "entree") mvForm(p, "Entrée", Math.max(Number(p.stock_min) - Number(p.stock), 1));
+    if (b.dataset.mv === "decond") promptDeconditionner(p);
+    else if (b.dataset.mv === "entree") mvForm(p, "Entrée", Math.max(Number(p.stock_min) - Number(p.stock), 1));
     else if (b.dataset.mv === "ajust") mvForm(p, "Ajustement");
     else if (b.dataset.mv === "lot") lotForm(p);
     else invForm(p);
@@ -1217,9 +1711,9 @@ function renderStFournisseurs(box, four) {
   $$("#stBody [data-fdel]").forEach(b => b.addEventListener("click", async () => {
     const f = four.find(x => String(x.id) === String(b.dataset.fdel));
     if (!f) return;
-    askConfirm("Supprimer le fournisseur", `Supprimer le fournisseur <b>${f.nom}</b> ?`, async () => {
-      try { await api("/fournisseurs/" + f.id, { method: "DELETE" }); toast("Fournisseur supprimé"); renderers.stock().catch(() => { }); } catch (e) { toast(e.message); }
-    }, { danger: true, okLabel: "Supprimer" });
+    askConfirm("Archiver le fournisseur", `Archiver le fournisseur <b>${esc(f.nom)}</b> ?<br><span class="muted">Le fournisseur sera archivé mais restera dans l'historique des commandes et mouvements de stock.</span>`, async () => {
+      try { await api("/fournisseurs/" + f.id, { method: "DELETE" }); toast("Fournisseur archivé — historique conservé ✅"); renderers.stock().catch(() => { }); } catch (e) { toast(e.message); }
+    }, { okLabel: "📦 Archiver" });
   }));
   $("#fourBtn").addEventListener("click", () => fournisseurForm(null));
 }
@@ -1520,7 +2014,17 @@ function commandeReception(c) {
     const totQ = actives.reduce((s, l) => s + l.qte, 0);
     askConfirm("Réceptionner la commande", `Réceptionner la commande <b>#${c.id}</b> (${esc(c.fournisseur_nom || "")}) ?<br>${actives.length} article(s) reçu(s) — <b>${totQ} unité(s)</b> au total.<br><span class="muted">Le stock sera augmenté et les lots créés automatiquement.</span>`, async () => {
       try {
-        await api(`/commandes/${c.id}/receptionner`, { method: "POST", body: JSON.stringify({ lignes: actives.map(l => ({ produitId: l.produitId, qte: l.qte, numeroLot: l.numeroLot, datePeremption: l.datePeremption })) }) });
+        await api(`/commandes/${c.id}/receptionner`, {
+          method: "POST",
+          body: JSON.stringify({
+            lignes: actives.map(l => ({
+              produitId: l.produitId,
+              qte: l.qte,
+              numeroLot: (l.numeroLot && String(l.numeroLot).trim()) || null,
+              datePeremption: (l.datePeremption && String(l.datePeremption).trim()) || null
+            }))
+          })
+        });
         toast("Commande réceptionnée - stock mis à jour ✅"); closeModal(); renderers.stock().catch(() => { });
       } catch (e) { toast(e.message); }
     }, { okLabel: "Réceptionner" });
@@ -1563,9 +2067,9 @@ function famManager(host) {
   const fams = DB.familles || [];
   const html = `<h3>🏷️ Gérer les familles</h3>
     <div class="row"><input id="famNew" class="grow" placeholder="Nouvelle famille..."><label class="field" style="display:flex;gap:6px;align-items:center;flex:0 0 auto"><input type="checkbox" id="famNewLot" style="width:auto"> Par lot</label><button class="btn primary" id="famAdd">+ Ajouter</button></div>
-    <div class="table-wrap" style="margin-top:8px"><table><tr><th>Famille</th><th>Géré par lot</th><th>Actions</th></tr>
-      ${fams.length === 0 ? `<tr><td colspan="3" class="empty">Aucune famille</td></tr>` :
-        fams.map(f => `<tr><td>${esc(f.nom)}</td><td><span class="badge ${f.gere_par_lot ? "info" : "off"}">${f.gere_par_lot ? "Oui" : "Non"}</span></td><td><div class="actions"><button class="btn small" data-fren="${f.id}">✎</button><button class="btn small" data-frlot="${f.id}" title="Activer/désactiver la gestion par lot">📦</button><button class="btn small" data-frmod="${f.id}">🗑</button></div></td></tr>`).join("")}
+    <div class="table-wrap" style="margin-top:8px"><table><tr><th>Famille</th><th>Géré par lot</th><th>Statut</th><th>Actions</th></tr>
+      ${fams.length === 0 ? `<tr><td colspan="4" class="empty">Aucune famille</td></tr>` :
+        fams.map(f => `<tr><td>${esc(f.nom)}</td><td><span class="badge ${f.gere_par_lot ? "info" : "off"}">${f.gere_par_lot ? "Oui" : "Non"}</span></td><td>${f.actif !== false ? '<span class="badge ok">Active</span>' : '<span class="badge off">Archivée</span>'}</td><td><div class="actions"><button class="btn small" data-fren="${f.id}">✎</button><button class="btn small" data-frlot="${f.id}" title="Activer/désactiver la gestion par lot">📦</button><button class="btn small ${f.actif !== false ? 'ghost' : 'success'}" data-frmod="${f.id}">${f.actif !== false ? '🚫 Désactiver' : '✅ Réactiver'}</button></div></td></tr>`).join("")}
     </table></div>`;
   if (inline) $(host).innerHTML = html; else openModal(html);
   const el = $(host);
@@ -1590,9 +2094,15 @@ function famManager(host) {
   el.querySelectorAll("[data-frmod]").forEach(b => b.addEventListener("click", async () => {
     const f = fams.find(x => String(x.id) === String(b.dataset.frmod));
     if (!f) return;
-    askConfirm("Supprimer la famille", `Supprimer la famille <b>« ${f.nom} »</b> ?<br><span class="muted">Refusée si des produits ou inventaires l'utilisent encore.</span>`, async () => {
-      try { await api("/familles/" + f.id, { method: "DELETE" }); toast("Famille supprimée"); DB.familles = await api("/familles"); renderers.produits().catch(() => { }); renderers.vente().catch(() => { }); famManager(host); } catch (e) { toast(e.message); }
-    }, { danger: true, okLabel: "Supprimer" });
+    if (f.actif !== false) {
+      // Désactiver (soft delete)
+      askConfirm("Désactiver la famille", `Désactiver la famille <b>« ${f.nom} »</b> ?<br><span class="muted">La famille sera archivée mais conservée dans l'historique. Les produits existants ne seront pas supprimés.</span>`, async () => {
+        try { await api("/familles/" + f.id, { method: "DELETE" }); toast("Famille désactivée — elle reste dans l'historique"); DB.familles = await api("/familles?all=1"); renderers.produits().catch(() => { }); renderers.vente().catch(() => { }); famManager(host); } catch (e) { toast(e.message); }
+      }, { danger: true, okLabel: "🚫 Désactiver" });
+    } else {
+      // Réactiver
+      try { await api("/familles/" + f.id, { method: "PUT", body: JSON.stringify({ nom: f.nom, gere_par_lot: f.gere_par_lot, actif: true }) }); toast("Famille réactivée ✅"); DB.familles = await api("/familles?all=1"); famManager(host); } catch (e) { toast(e.message); }
+    }
   }));
 }
 function mvForm(p, type, qteDefaut) {
@@ -1688,6 +2198,44 @@ function invForm(p) {
   });
 }
 
+function sharePointWhatsApp(caisses, from, to) {
+  const bq = DB.boutique || {};
+  const tEsp = caisses.reduce((s, c) => s + Number(c.especes || 0), 0);
+  const tAutres = caisses.reduce((s, c) => s + Number(c.autres || 0), 0);
+  const tVerse = caisses.reduce((s, c) => s + Number(c.verse_total || 0), 0);
+  const tEcart = caisses.reduce((s, c) => s + Number(c.ecart || 0), 0);
+  const tTickets = caisses.reduce((s, c) => s + Number(c.tickets || 0), 0);
+  const totalCA = tEsp + tAutres;
+
+  const txt = `📊 *BILAN DE CAISSE - ${esc(bq.nom || "GSV")}*
+🗓️ Période : du ${from} au ${to}
+══════════════════════
+💵 *Chiffre d'Affaires :* ${money(totalCA)} (${tTickets} tickets)
+  • Espèces : ${money(tEsp)}
+  • Autres modes (Mobile/Carte) : ${money(tAutres)}
+🏦 *Versements effectués :* ${money(tVerse)}
+⚖️ *Écart global constaté :* ${money(tEcart)}
+══════════════════════
+${caisses.map(c => `👤 ${c.user_nom} : ${money(Number(c.especes)+Number(c.autres||0))} (${c.tickets||0} tks, statut: ${c.statut})`).join("\n")}
+══════════════════════
+Généré le ${new Date().toLocaleDateString("fr-FR")} à ${new Date().toLocaleTimeString("fr-FR")}`;
+
+  openModal(`<h3>📲 Partager le bilan de caisse</h3>
+    <div class="ticket-preview" style="font-family:sans-serif;white-space:pre-wrap;font-size:13px">${esc(txt)}</div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn success grow" id="openWaBtn">📲 Ouvrir WhatsApp</button>
+      <button class="btn primary grow" id="copyWaBtn">📋 Copier le texte</button>
+      <button class="btn ghost grow" onclick="closeModal()">Fermer</button>
+    </div>`);
+
+  $("#openWaBtn").addEventListener("click", () => {
+    window.open("https://wa.me/?text=" + encodeURIComponent(txt), "_blank");
+  });
+  $("#copyWaBtn").addEventListener("click", () => {
+    navigator.clipboard.writeText(txt).then(() => toast("Bilan copié dans le presse-papier ✅")).catch(() => toast("Erreur de copie"));
+  });
+}
+
 /* ---------- clôture de caisse (caissière principale) ---------- */
 let pointClass = "caissiere";
 let pointTab = "attente", pointFrom = todayKey(), pointTo = todayKey(), pointCaiss = "";
@@ -1761,8 +2309,9 @@ renderers.point = async function () {
         ${tab.length === 0 ? `<tr><td colspan="11" class="empty">Aucune caisse dans cet onglet pour la période</td></tr>` : pgSlice("point", tab).part.map(row).join("")}
         <tr style="font-weight:800"><td class="sticky-l">Total période (${tab.length})</td><td colspan="2"></td><td class="num">${money(tFonds)}</td><td class="num">${money(tEsp)}</td><td class="num">${money(tAutres)}</td><td class="num">${money(tAttendu)}</td><td class="num">${money(tCompte)}</td><td class="num">${money(tEcart)}</td><td class="num">${money(tVerse)}</td><td class="sticky-r"></td></tr>
       </table></div>
-      <div class="row" style="margin-top:10px">
+      <div class="row wrap" style="margin-top:10px;gap:8px">
         <button class="btn primary" id="pointPrint">🖨️ Imprimer ce tableau</button>
+        <button class="btn success" id="pointWhatsapp">📲 Bilan WhatsApp</button>
         <button class="btn ghost" id="pointCsv">⬇️ CSV</button>
       </div>
       <p class="muted" style="margin-top:8px">💡 ${esc(reglePoint())}</p>
@@ -1782,6 +2331,8 @@ renderers.point = async function () {
     const corps = `<h2>${pointTab === "attente" ? "Caisses en attente" : "Caisses validées"} - ${pointFrom} → ${pointTo}</h2>` + $("#pointBox .table-wrap").outerHTML;
     imprimer("Récapitulatif des caisses", corps, "A4");
   });
+  const waBtn = $("#pointWhatsapp");
+  if (waBtn) waBtn.addEventListener("click", () => sharePointWhatsApp(caisses, pointFrom, pointTo));
   $("#pointCsv").addEventListener("click", () => {
     const lines = [["Caissière", "Ouverture", "Statut", "Fonds", "Espèces", "Autres modes", "Attendu", "Compté", "Écart", "Versé"]].concat(tab.map(c => [c.user_nom, new Date(c.ouverte_le).toLocaleString("fr-FR"), c.statut, c.fonds_initial, c.especes, c.autres || 0, c.statut === "ouverte" ? c.attendu_especes : c.total_attendu || 0, c.total_compte != null ? c.total_compte : "", c.ecart != null ? c.ecart : "", c.verse_total]));
     downloadCsv("caisses-" + pointFrom + "-" + pointTo + ".csv", lines);
@@ -1995,10 +2546,296 @@ async function roleForm() {
   });
 }
 
+
+/* ============================================================
+   MODULE CLIENTS & FIDÉLITÉ
+   ============================================================ */
+renderers.clients = async function () {
+  const box = $("#clientsBox");
+  if (!box) return;
+  box.innerHTML = '<div class="skeleton" style="height:120px;margin-bottom:8px"></div>';
+  let list = [];
+  try {
+    const q = ($("#clientSearch") && $("#clientSearch").value) || "";
+    list = await api("/clients" + (q ? "?q=" + encodeURIComponent(q) : ""));
+    DB.clients = list;
+  } catch (e) { box.innerHTML = '<div class="empty">Erreur : ' + esc(e.message) + '</div>'; return; }
+
+  if (!list.length) {
+    box.innerHTML = '<div class="empty">Aucun client enregistré<br><br><button class="btn primary" id="emptyNewClientBtn" type="button">+ Créer un client</button></div>';
+    const eb = $("#emptyNewClientBtn");
+    if (eb) eb.addEventListener("click", () => clientForm(null));
+    return;
+  }
+
+  box.innerHTML = '<p class="muted" style="margin:0 0 8px">' + list.length + ' client(s) répertorié(s)</p>'
+    + '<div class="table-wrap"><table>'
+    + '<tr><th>Nom</th><th>Téléphone</th><th>Adresse</th><th class="num">Points fidélité</th><th class="num">Crédit en cours</th><th class="num">Plafond crédit</th><th>Statut</th><th>Actions</th></tr>'
+    + list.map(function(c) {
+      const solde = Number(c.solde_credit || 0);
+      return '<tr>'
+        + '<td><b>' + esc(c.nom) + '</b>' + (c.notes ? ' <span class="muted" title="' + esc(c.notes) + '">📝</span>' : '') + '</td>'
+        + '<td>' + (c.tel ? '<a href="tel:' + esc(c.tel) + '">' + esc(c.tel) + '</a>' : '—') + '</td>'
+        + '<td>' + esc(c.adresse || '—') + '</td>'
+        + '<td class="num"><span class="badge" style="background:#fef3c7;color:#b45309;font-weight:700">⭐ ' + c.points + ' pts</span></td>'
+        + '<td class="num">' + (solde > 0 ? '<span class="badge err">' + money(solde) + '</span>' : '<span class="badge ok">0 F</span>') + '</td>'
+        + '<td class="num"><b>' + money(c.plafond_credit) + '</b></td>'
+        + '<td>' + (c.actif ? '<span class="badge ok">Actif</span>' : '<span class="badge off">Inactif</span>') + '</td>'
+        + '<td><div class="actions">'
+        + '<button class="btn small" data-cl-hist="' + c.id + '">📜 Historique</button>'
+        + '<button class="btn small" data-cl-edit="' + c.id + '">✏️ Modifier</button>'
+        + '</div></td>'
+        + '</tr>';
+    }).join('') + '</table></div>';
+
+  box.querySelectorAll("[data-cl-edit]").forEach(function(b) {
+    b.addEventListener("click", function() {
+      const cl = (DB.clients || []).find(c => String(c.id) === String(b.dataset.clEdit));
+      if (cl) clientForm(cl);
+    });
+  });
+
+  box.querySelectorAll("[data-cl-hist]").forEach(function(b) {
+    b.addEventListener("click", function() {
+      clientHistoryModal(b.dataset.clHist);
+    });
+  });
+};
+
+function clientForm(c) {
+  const isNew = !c;
+  c = c || { nom: "", tel: "", email: "", adresse: "", plafond_credit: 50000, notes: "", actif: true };
+  openModal(`
+    <h3>${isNew ? "➕ Nouveau client" : "✏️ Modifier : " + esc(c.nom)}</h3>
+    <label class="field">Nom complet du client *
+      <input id="clfNom" value="${esc(c.nom || "")}" placeholder="ex: Moussa Diallo">
+    </label>
+    <div class="row">
+      <label class="field grow">Téléphone (WhatsApp)
+        <input id="clfTel" value="${esc(c.tel || "")}" placeholder="ex: 771234567" inputmode="tel">
+      </label>
+      <label class="field grow">Email
+        <input id="clfEmail" value="${esc(c.email || "")}" placeholder="ex: client@email.com" inputmode="email">
+      </label>
+    </div>
+    <label class="field">Adresse / Quartier
+      <input id="clfAdresse" value="${esc(c.adresse || "")}" placeholder="ex: Dakar Plateau, Rue 12">
+    </label>
+    <label class="field">Plafond maximal de crédit autorisé (F)
+      <input id="clfPlafond" type="number" inputmode="decimal" min="0" value="${c.plafond_credit || 50000}">
+      <p class="muted" style="margin:2px 0 0;font-size:11px">Le système bloquera automatiquement toute vente à crédit si le cumul dépasse ce montant.</p>
+    </label>
+    <label class="field">Notes / Remarques
+      <textarea id="clfNotes" rows="2" placeholder="Préférences, conventions particulières...">${esc(c.notes || "")}</textarea>
+    </label>
+    ${!isNew ? `<label class="field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="clfActif" style="width:auto" ${c.actif ? "checked" : ""}> Client actif</label>` : ""}
+    <div class="row" style="margin-top:14px">
+      <button class="btn success grow" id="clfSave" type="button">💾 Enregistrer</button>
+      <button class="btn ghost grow" onclick="closeModal()" type="button">Annuler</button>
+    </div>
+  `);
+
+  $("#clfSave").addEventListener("click", async function() {
+    const nom = $("#clfNom").value.trim();
+    if (!nom) { toast("Le nom est obligatoire"); return; }
+    const body = {
+      nom,
+      tel: $("#clfTel").value.trim(),
+      email: $("#clfEmail").value.trim(),
+      adresse: $("#clfAdresse").value.trim(),
+      plafond_credit: Number($("#clfPlafond").value) || 0,
+      notes: $("#clfNotes").value.trim(),
+      actif: $("#clfActif") ? $("#clfActif").checked : true
+    };
+    try {
+      let created = null;
+      if (isNew) {
+        created = await api("/clients", { method: "POST", body: JSON.stringify(body) });
+        toast("Client créé avec succès ✅");
+      } else {
+        await api("/clients/" + c.id, { method: "PUT", body: JSON.stringify(body) });
+        toast("Fiche client mise à jour ✅");
+      }
+      closeModal();
+      try { DB.clients = await api("/clients"); } catch (e) {}
+      if (curView === "clients") renderers.clients();
+      if (curView === "vente") {
+        renderCart();
+        if (created && created.id) {
+          const sel = $("#cartClientSel");
+          if (sel) { sel.value = String(created.id); updateCartClientInfo(); }
+        }
+      }
+    } catch (e) { toast(e.message); }
+  });
+}
+window.clientForm = clientForm;
+
+async function clientHistoryModal(cid) {
+  openModal('<div class="skeleton" style="height:140px"></div>');
+  try {
+    const res = await api("/clients/" + cid + "/historique");
+    const cl = res.client;
+    const vts = res.ventes || [];
+    const totalAchats = vts.reduce((s, v) => s + Number(v.net), 0);
+
+    openModal(`
+      <h3>👤 Fiche & Historique : ${esc(cl.nom)}</h3>
+      <div class="cards" style="margin-bottom:12px">
+        <div class="card"><div class="k">Points fidélité</div><div class="v" style="color:#ca8a04">⭐ ${cl.points} pts</div></div>
+        <div class="card"><div class="k">Cumul achats</div><div class="v">${money(totalAchats)}</div></div>
+        <div class="card"><div class="k">Plafond crédit</div><div class="v">${money(cl.plafond_credit)}</div></div>
+      </div>
+      <div class="table-wrap" style="max-height:300px;overflow-y:auto">
+        <table>
+          <tr><th>Date</th><th>Ticket</th><th>Articles</th><th class="num">Net</th><th>Mode</th></tr>
+          ${vts.length === 0 ? '<tr><td colspan="5" class="empty">Aucun achat enregistré pour le moment</td></tr>' :
+            vts.map(v => '<tr><td>' + fmtDate(v.date) + '</td><td><b>' + esc(v.numero) + '</b></td><td>' + ((v.items || []).map(i => i.nom + ' (x' + i.qte + ')').join(', ')) + '</td><td class="num"><b>' + money(v.net) + '</b></td><td>' + (modeLabel(v.mode) || v.mode) + '</td></tr>').join('')}
+        </table>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn ghost grow" onclick="closeModal()">Fermer</button>
+      </div>
+    `);
+  } catch (e) { toast(e.message); closeModal(); }
+}
+
+/* ============================================================
+   MODULE DÉCONDITIONNEMENT GROS -> DÉTAIL
+   ============================================================ */
+function promptDeconditionner(childProd) {
+  const parentId = childProd.parent_produit_id;
+  const parent = produitById(parentId);
+  if (!parent) { toast("Carton parent introuvable"); return; }
+  const ratio = Number(childProd.qte_par_parent) || 1;
+
+  openModal(`
+    <h3>📦 Déconditionner : ${esc(parent.nom)} ➔ ${esc(childProd.nom)}</h3>
+    <div style="background:rgba(14,116,144,.08);padding:10px;border-radius:8px;margin:8px 0;border:1px solid rgba(14,116,144,.3)">
+      <p style="margin:0">📦 <b>1 ${esc(parent.unite || "carton")}</b> de « ${esc(parent.nom)} » contient <b>${ratio} ${esc(childProd.unite || "unités")}</b> de « ${esc(childProd.nom)} ».</p>
+      <p style="margin:4px 0 0;font-size:12px" class="muted">Stock actuel : <b>${parent.stock} ${esc(parent.unite || "carton(s)")}</b> disponibles.</p>
+    </div>
+    <label class="field" style="margin-top:10px">Nombre de ${esc(parent.unite || "cartons")} à ouvrir / déconditionner *
+      <input type="number" id="decondQte" min="1" max="${parent.stock}" value="1" inputmode="numeric">
+    </label>
+    <p id="decondPreview" style="font-weight:700;color:var(--primary);margin:4px 0 10px">Résultat : -${1} ${esc(parent.unite || "carton")} | +${ratio} ${esc(childProd.unite || "unités")}</p>
+    <div class="row">
+      <button class="btn primary grow" id="decondConfirmBtn">📦 Confirmer le déconditionnement</button>
+      <button class="btn ghost grow" onclick="closeModal()">Annuler</button>
+    </div>
+  `);
+
+  const inp = $("#decondQte");
+  const prev = $("#decondPreview");
+  inp.addEventListener("input", function() {
+    const q = Number(inp.value) || 0;
+    prev.textContent = "Résultat : -" + q + " " + (parent.unite || "carton(s)") + " | +" + (q * ratio) + " " + (childProd.unite || "unités");
+  });
+
+  $("#decondConfirmBtn").addEventListener("click", async function() {
+    const q = Number(inp.value) || 0;
+    if (q <= 0) { toast("Quantité invalide"); return; }
+    try {
+      const res = await api("/produits/" + childProd.id + "/deconditionner", { method: "POST", body: JSON.stringify({ qte_parent: q }) });
+      closeModal();
+      toast("Déconditionnement réussi : +" + res.ajout_child + " " + (childProd.unite || "unités") + " ajoutées ✅");
+      renderers.stock().catch(() => {});
+    } catch (e) { toast(e.message); }
+  });
+}
+
+/* ============================================================
+   VERROUILLAGE RAPIDE CODE PIN (CAISSIÈRES)
+   ============================================================ */
+function pinLockModal() {
+  let pinVal = "";
+  openModal(`
+    <div style="text-align:center">
+      <div style="font-size:36px;margin-bottom:4px">🔒</div>
+      <h3 style="margin:0">Verrouillage de Caisse</h3>
+      <p class="muted" style="margin:2px 0 10px;font-size:12px">Tapez votre code PIN à 4 chiffres pour déverrouiller</p>
+      <div id="pinDisplay" class="pin-display">••••</div>
+      <div class="pin-pad">
+        <button class="pin-btn" data-n="1">1</button>
+        <button class="pin-btn" data-n="2">2</button>
+        <button class="pin-btn" data-n="3">3</button>
+        <button class="pin-btn" data-n="4">4</button>
+        <button class="pin-btn" data-n="5">5</button>
+        <button class="pin-btn" data-n="6">6</button>
+        <button class="pin-btn" data-n="7">7</button>
+        <button class="pin-btn" data-n="8">8</button>
+        <button class="pin-btn" data-n="9">9</button>
+        <button class="pin-btn" data-n="C" style="color:var(--danger)">⌫</button>
+        <button class="pin-btn" data-n="0">0</button>
+        <button class="pin-btn" data-n="OK" style="color:var(--success);font-size:16px">✓</button>
+      </div>
+      <button class="btn ghost small" onclick="closeModal()" style="margin-top:10px">Annuler</button>
+    </div>
+  `);
+
+  const disp = $("#pinDisplay");
+  const updateDisp = () => {
+    disp.textContent = pinVal ? "•".repeat(pinVal.length).padEnd(4, "–") : "••••";
+  };
+
+  const trySubmit = async () => {
+    if (pinVal.length < 4) { toast("Code PIN à 4 chiffres requis"); return; }
+    try {
+      const res = await api("/auth/pin-login", { method: "POST", body: JSON.stringify({ pin: pinVal }) });
+      token = res.token;
+      localStorage.setItem("gs_token", token);
+      cur = res.user;
+      closeModal();
+      toast("Session déverrouillée : " + cur.nom + " ✅");
+      await showApp();
+    } catch (e) {
+      pinVal = "";
+      updateDisp();
+      disp.classList.add("shake");
+      setTimeout(() => disp.classList.remove("shake"), 400);
+      toast(e.message || "Code PIN incorrect");
+    }
+  };
+
+  const onKey = e => {
+    const m = $("#modal");
+    if (!m || m.classList.contains("hidden")) { document.removeEventListener("keydown", onKey); return; }
+    if (e.key >= "0" && e.key <= "9") {
+      e.preventDefault();
+      if (pinVal.length < 6) {
+        pinVal += e.key;
+        updateDisp();
+        if (pinVal.length === 4) trySubmit();
+      }
+    } else if (e.key === "Backspace") {
+      e.preventDefault();
+      pinVal = pinVal.slice(0, -1);
+      updateDisp();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      trySubmit();
+    }
+  };
+  document.addEventListener("keydown", onKey);
+
+  $$("#modalCard .pin-btn").forEach(b => {
+    b.addEventListener("click", () => {
+      const n = b.dataset.n;
+      if (n === "C") { pinVal = pinVal.slice(0, -1); updateDisp(); }
+      else if (n === "OK") { trySubmit(); }
+      else if (pinVal.length < 6) {
+        pinVal += n;
+        updateDisp();
+        if (pinVal.length === 4) trySubmit();
+      }
+    });
+  });
+}
+
 /* ---------- STOCK DORMANT ---------- */
 let dormantJours = 30;
 renderers.dormant = async function (box) {
-  box = box || $("#dormantBox");
+  box = box || $("#dormantBox") || $("#stockWrap");
   if (!box) return;
   try {
     const rows = await api("/stock/dormant?jours=" + dormantJours);
@@ -2035,7 +2872,7 @@ function downloadCSV(filename, rows) {
 }
 renderers.depenses = async function () {
   var rows = [];
-  try { rows = await api("/depenses"); } catch (e) { toast(e.message); return; }
+  try { rows = await api("/depenses?all=1"); } catch (e) { toast(e.message); return; }
   DB.depenses = rows;
   renderDepenses();
 };
@@ -2043,27 +2880,39 @@ function renderDepenses() {
   var rows = DB.depenses || [];
   var catsFull = ["Loyer","Electricite","Eau","Transport","Salaires","Courses boutique","Materiel","Maintenance","Communication","Autre"];
   var f = String($("#depSearch") ? $("#depSearch").value : "").toLowerCase().trim();
-  var filtered = f ? rows.filter(function(r) {
+  var actives = rows.filter(function(r) { return !r.annule; });
+  var annulees = rows.filter(function(r) { return r.annule; });
+  var filtered = f ? actives.filter(function(r) {
     return (r.motif || "").toLowerCase().indexOf(f) >= 0 || (r.categorie || "").toLowerCase().indexOf(f) >= 0
       || (r.mode || "").toLowerCase().indexOf(f) >= 0 || (r.user_nom || "").toLowerCase().indexOf(f) >= 0;
-  }) : rows;
+  }) : actives;
   var total = filtered.reduce(function(s, r) { return s + Number(r.montant); }, 0);
   var byCat = {};
-  rows.forEach(function(r) { byCat[r.categorie] = (byCat[r.categorie] || 0) + Number(r.montant); });
+  actives.forEach(function(r) { byCat[r.categorie] = (byCat[r.categorie] || 0) + Number(r.montant); });
   var catsHTML = Object.keys(byCat).sort(function(a, b) { return byCat[b] - byCat[a]; }).map(function(c) { return '<span class="badge info">' + esc(c) + ' : ' + money(byCat[c]) + '</span>'; }).join(" ");
+  var annuleesHTML = annulees.length === 0 ? '<div class="empty">Aucune dépense annulée</div>'
+    : '<div class="table-wrap"><table><tr><th>Date</th><th>Catégorie</th><th>Motif</th><th class="num">Montant</th><th>Annulé par</th><th>Motif annulation</th><th>Le</th></tr>'
+      + annulees.map(function(r) { return '<tr style="opacity:0.6;text-decoration:line-through"><td>' + fmtDate(r.date) + '</td><td><span class="badge off">' + esc(r.categorie) + '</span></td>'
+        + '<td>' + esc(r.motif || '') + '</td><td class="num">' + money(r.montant) + '</td>'
+        + '<td>' + esc(r.annule_par || '') + '</td><td><i>' + esc(r.annule_motif || '') + '</i></td>'
+        + '<td>' + (r.annule_le ? fmtDate(r.annule_le) : '') + '</td></tr>'; }).join('')
+      + '</table></div>';
+
   $("#depensesBox").innerHTML = '<div class="row wrap" style="margin-bottom:10px"><h2 class="grow" style="margin:0">Dépenses</h2>'
     + '<button class="btn small" id="depExport" title="Exporter en CSV">⬇️ CSV</button>'
     + '<button class="btn primary" id="depAdd">+ Nouvelle dépense</button></div>'
     + '<input id="depSearch" class="grow" placeholder="🔎 Rechercher (motif, catégorie, mode…)" value="' + esc(f) + '" style="margin-bottom:8px">'
-    + (rows.length === 0 ? '<div class="empty">Aucune dépense enregistrée</div>'
+    + (actives.length === 0 ? '<div class="empty">Aucune dépense enregistrée</div>'
     : '<div class="row wrap" style="margin-bottom:6px;gap:4px">' + catsHTML + '</div>'
     + '<p class="muted" style="margin:0 0 8px">Total' + (f ? ' (filtré)' : '') + ' : <b>' + money(total) + '</b> — ' + filtered.length + ' dépense(s)</p>'
     + '<div class="table-wrap"><table><tr><th>Date</th><th>Catégorie</th><th>Motif</th><th>Mode</th><th class="num">Montant</th><th>Par</th><th></th></tr>'
     + filtered.map(function(r) { return '<tr><td>' + fmtDate(r.date) + '</td><td><span class="badge info">' + esc(r.categorie) + '</span></td>'
       + '<td>' + esc(r.motif || '') + '</td><td>' + esc(r.mode || '') + '</td>'
       + '<td class="num"><b>' + money(r.montant) + '</b></td><td>' + esc(r.user_nom || '') + '</td>'
-      + '<td><button class="btn small danger" data-deldep="' + r.id + '">🗑</button></td></tr>'; }).join('')
-    + '</table></div>');
+      + '<td><button class="btn small ghost" data-deldep="' + r.id + '" title="Annuler cette dépense">🚫 Annuler</button></td></tr>'; }).join('')
+    + '</table></div>')
+    + (annulees.length > 0 ? '<details style="margin-top:16px"><summary style="cursor:pointer;color:var(--muted);font-size:13px">🗑️ Dépenses annulées (' + annulees.length + ')</summary>' + annuleesHTML + '</details>' : '');
+
   var addBtn = $("#depAdd");
   if (addBtn) addBtn.addEventListener("click", function() {
     openModal('<h3>Nouvelle dépense</h3>'
@@ -2094,10 +2943,14 @@ function renderDepenses() {
     })));
   });
   document.querySelectorAll("#depensesBox [data-deldep]").forEach(function(b) { b.addEventListener("click", function() {
-    askConfirm("Supprimer la dépense", "Confirmer la suppression ?", async function() {
-      try { await api("/depenses/" + b.dataset.deldep, { method: "DELETE" }); toast("Dépense supprimée"); renderers.depenses().catch(function(){}); }
-      catch (e) { toast(e.message); }
-    }, { danger: true, okLabel: "Supprimer" });
+    askPrompt("Motif d'annulation", "Pourquoi annulez-vous cette dépense ?", async function(motif) {
+      if (!motif || !motif.trim()) { toast("Motif obligatoire pour l'annulation"); return; }
+      try {
+        await api("/depenses/" + b.dataset.deldep, { method: "DELETE", body: JSON.stringify({ motif: motif.trim() }) });
+        toast("Dépense annulée — trace conservée ✅");
+        renderers.depenses().catch(function(){});
+      } catch (e) { toast(e.message); }
+    });
   }); });
 }
 
@@ -2172,12 +3025,16 @@ async function genRapport() {
   const group = $("#rapGroup").value;
   const r = await api(`/rapports?from=${from}&to=${to}&groupe=${group}`);
   const rows = r.groups || [];
-  const tot = r.tot || { qte: 0, ca: 0, ben: 0 };
+  const tot = r.tot || { qte: 0, ca: 0, ben: 0, depenses: 0, ben_net: 0 };
+  const benNet = tot.ben_net != null ? tot.ben_net : tot.ben - (tot.depenses || 0);
+  const rentabilite = Number(tot.ca) > 0 ? Math.round(Number(benNet) / Number(tot.ca) * 100) : 0;
   $("#rapportBox").innerHTML = `
     <div class="cards">
       <div class="card"><div class="k">Chiffre d'affaires</div><div class="v">${money(tot.ca)}</div></div>
-      <div class="card"><div class="k">Bénéfice brut</div><div class="v ok">${money(tot.ben)}</div></div>
-      <div class="card"><div class="k">Marge moyenne</div><div class="v">${Number(tot.ca) > 0 ? Math.round(Number(tot.ben) / Number(tot.ca) * 100) : 0} %</div></div>
+      <div class="card"><div class="k">Marge brute</div><div class="v">${money(tot.ben)}</div></div>
+      <div class="card"><div class="k">Dépenses période</div><div class="v" style="color:var(--amber)">${money(tot.depenses || 0)}</div></div>
+      <div class="card"><div class="k">Bénéfice net réel</div><div class="v ${benNet >= 0 ? "ok" : "ko"}">${money(benNet)}</div></div>
+      <div class="card"><div class="k">Rentabilité nette</div><div class="v">${rentabilite} %</div></div>
       <div class="card"><div class="k">Articles vendus</div><div class="v">${tot.qte}</div></div>
     </div>
     ${rows.length > 0 ? pgBar("rapport", rows.length, "ligne(s)") : ""}
@@ -2188,7 +3045,7 @@ async function genRapport() {
     </table></div>`;
   const top = [...rows].sort((a, b) => Number(b.ben) - Number(a.ben)).slice(0, 5);
   $("#rapportBox").insertAdjacentHTML("beforeend", `<h3>Top produits rentables</h3>` +
-    (top.length === 0 ? `<div class="empty">-</div>` : `<div class="table-wrap"><table><tr><th>${group === "article" ? "Article" : "Groupe"}</th><th class="num">Bénéfice</th></tr>` + top.map(x => `<tr><td>${esc(x.key)}</td><td class="num">${money(x.ben)}</td></tr>`).join("") + `</table></div>`, "80mm"));
+    (top.length === 0 ? `<div class="empty">-</div>` : `<div class="table-wrap"><table><tr><th>${group === "article" ? "Article" : "Groupe"}</th><th class="num">Bénéfice</th></tr>` + top.map(x => `<tr><td>${esc(x.key)}</td><td class="num">${money(x.ben)}</td></tr>`).join("") + `</table></div>`));
 }
 
 /* ---------- journal ---------- */
@@ -2555,6 +3412,7 @@ let venteAfterClose = false;
 function closeModal() {
   if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
   if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+  if (scanQr) { try { scanQr.stop().then(() => {}).catch(() => {}); } catch (e) { } scanQr = null; }
   $("#modal").classList.add("hidden");
   if (venteAfterClose) { venteAfterClose = false; if (curView === "vente") { const vs = $("#venteSearch"); if (vs) { vs.focus(); vs.select(); } } }
 }
@@ -2611,16 +3469,30 @@ function askConfirm(titre, message, onOk, opts) {
 
 /* ---------- événements ---------- */
 
-/* ---------- NOTIFICATIONS VERSEMENTS ---------- */
+/* ---------- NOTIFICATIONS VALIDATIONS (VERSEMENTS & ANNULATIONS) ---------- */
 let notifCount = 0;
-async function checkNotifVersements() {
+async function checkNotifValidations() {
   try {
-    const r = await api("/versements/en-attente");
-    notifCount = (r.rows || []).length;
+    const [vRes, aRes] = await Promise.all([
+      api("/versements/en-attente").catch(() => ({ rows: [] })),
+      api("/annulations/en-attente").catch(() => ({ rows: [] }))
+    ]);
+    const vRows = (vRes.rows || []).length;
+    const aRows = (aRes.rows || []).length;
+    notifCount = vRows + aRows;
+
     const badge = document.getElementById("notifBadge");
     if (badge) { badge.textContent = notifCount; badge.classList.toggle("hidden", notifCount === 0); }
+
+    const vb = document.getElementById("vBadgeAttente");
+    if (vb) { vb.textContent = vRows; vb.classList.toggle("hidden", vRows === 0); }
+
+    const ab = document.getElementById("vBadgeAnnul");
+    if (ab) { ab.textContent = aRows; ab.classList.toggle("hidden", aRows === 0); }
   } catch (e) { /* silent */ }
 }
+const checkNotifVersements = checkNotifValidations;
+
 function renderVersementsAttente() {
   api("/versements/en-attente").then(r => {
     const box = document.getElementById("versementBox");
@@ -2630,7 +3502,7 @@ function renderVersementsAttente() {
       box.innerHTML = '<div class="empty">Aucune demande de versement en attente</div>';
       return;
     }
-    box.innerHTML = '<p class="muted" style="margin:0 0 8px">' + rows.length + ' demande(s) en attente</p>'
+    box.innerHTML = '<p class="muted" style="margin:0 0 8px">' + rows.length + ' demande(s) de versement en attente</p>'
       + '<div class="table-wrap"><table><tr><th>Caissière</th><th class="num">Montant</th><th>Mode</th><th>Motif</th><th>Date</th><th>Actions</th></tr>'
       + rows.map(function(v) {
         return '<tr><td>' + esc(v.caissiere_nom) + '</td><td class="num"><b>' + money(v.montant) + '</b></td>'
@@ -2643,7 +3515,7 @@ function renderVersementsAttente() {
       }).join('') + '</table></div>';
     document.querySelectorAll("[data-vval]").forEach(function(b) {
       b.addEventListener("click", async function() {
-        try { await api("/versements/" + b.dataset.vval + "/valider", { method: "POST" }); toast("Versement validé"); checkNotifVersements(); renderVersementsAttente(); }
+        try { await api("/versements/" + b.dataset.vval + "/valider", { method: "POST" }); toast("Versement validé ✅"); checkNotifValidations(); renderVersementsAttente(); }
         catch (e) { toast(e.message); }
       });
     });
@@ -2651,13 +3523,102 @@ function renderVersementsAttente() {
       b.addEventListener("click", function() {
         askPrompt("Refuser le versement", "", async function(motif) {
           if (!motif || !motif.trim()) { toast("Motif obligatoire"); return; }
-          try { await api("/versements/" + b.dataset.vref + "/refuser", { method: "POST", body: JSON.stringify({ motif: motif.trim() }) }); toast("Versement refusé"); checkNotifVersements(); renderVersementsAttente(); }
+          try { await api("/versements/" + b.dataset.vref + "/refuser", { method: "POST", body: JSON.stringify({ motif: motif.trim() }) }); toast("Versement refusé"); checkNotifValidations(); renderVersementsAttente(); }
           catch (e) { toast(e.message); }
         });
       });
     });
   }).catch(function(e) { toast(e.message); });
 }
+
+function renderAnnulationsAttente() {
+  api("/annulations/en-attente").then(r => {
+    const box = document.getElementById("annulationsBox");
+    if (!box) return;
+    const rows = r.rows || [];
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty">Aucune demande d\'annulation de vente en attente</div>';
+      return;
+    }
+    box.innerHTML = '<p class="muted" style="margin:0 0 8px">' + rows.length + ' demande(s) d\'annulation de vente en attente</p>'
+      + '<div class="table-wrap"><table><tr><th>Ticket</th><th>Caissière</th><th class="num">Montant</th><th>Motif d\'annulation</th><th>Demandé le</th><th>Actions</th></tr>'
+      + rows.map(function(a) {
+        return '<tr>'
+          + '<td><b>' + esc(a.vente_numero) + '</b></td>'
+          + '<td>' + esc(a.user_nom) + '</td>'
+          + '<td class="num"><b>' + money(a.vente_net) + '</b></td>'
+          + '<td><span style="color:var(--danger);font-weight:600">' + esc(a.motif) + '</span></td>'
+          + '<td>' + fmtDate(a.date_demande) + '</td>'
+          + '<td><div class="actions">'
+          + (r.canValidate
+              ? '<button class="btn small success" data-aval="' + a.id + '" data-num="' + esc(a.vente_numero) + '">✓ Accepter</button>'
+                + '<button class="btn small danger" data-aref="' + a.id + '" data-num="' + esc(a.vente_numero) + '">✗ Refuser</button>'
+              : '<span class="muted" style="font-size:12px">Réservé à ' + esc(r.validateur) + '</span>')
+          + '</div></td></tr>';
+      }).join('') + '</table></div>';
+
+    document.querySelectorAll("[data-aval]").forEach(function(b) {
+      b.addEventListener("click", function() {
+        const num = b.dataset.num;
+        askConfirm("Confirmer l'annulation", `Voulez-vous accepter l'annulation du ticket <b>${esc(num)}</b> ?<br><span class="muted">La vente sera supprimée et les articles réintégrés en stock.</span>`, async function() {
+          try {
+            await api("/annulations/" + b.dataset.aval + "/valider", { method: "POST" });
+            toast("Annulation validée — Vente supprimée & stock restauré ↩️");
+            checkNotifValidations();
+            renderAnnulationsAttente();
+          } catch (e) { toast(e.message); }
+        }, { danger: true, okLabel: "Valider l'annulation" });
+      });
+    });
+
+    document.querySelectorAll("[data-aref]").forEach(function(b) {
+      b.addEventListener("click", function() {
+        const num = b.dataset.num;
+        askPrompt("Motif de refus pour l'annulation de " + num, "Demande non justifiée", async function(motif) {
+          if (!motif || !motif.trim()) { toast("Motif de refus obligatoire"); return; }
+          try {
+            await api("/annulations/" + b.dataset.aref + "/refuser", { method: "POST", body: JSON.stringify({ motif: motif.trim() }) });
+            toast("Demande d'annulation refusée");
+            checkNotifValidations();
+            renderAnnulationsAttente();
+          } catch (e) { toast(e.message); }
+        });
+      });
+    });
+  }).catch(function(e) { toast(e.message); });
+}
+
+function renderAnnulationsHist() {
+  api("/annulations").then(function(r) {
+    const box = document.getElementById("annulationsHistBox");
+    if (!box) return;
+    const rows = r.rows || [];
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty">Aucun historique de demande d\'annulation</div>';
+      return;
+    }
+    box.innerHTML = '<p class="muted" style="margin:0 0 8px">' + rows.length + ' demande(s) au total</p>'
+      + '<div class="table-wrap"><table><tr><th>Ticket</th><th>Statut</th><th>Caissière</th><th class="num">Montant</th><th>Motif</th><th>Demandé le</th><th>Traité par</th><th>Détail / Motif refus</th></tr>'
+      + rows.map(function(a) {
+        const badge = a.statut === "validee"
+          ? '<span class="badge ok">✓ Acceptée</span>'
+          : a.statut === "refusee"
+          ? '<span class="badge err">✗ Refusée</span>'
+          : '<span class="badge" style="background:#eab308;color:#000">⏳ En attente</span>';
+        return '<tr>'
+          + '<td><b>' + esc(a.vente_numero) + '</b></td>'
+          + '<td>' + badge + '</td>'
+          + '<td>' + esc(a.user_nom) + '</td>'
+          + '<td class="num"><b>' + money(a.vente_net) + '</b></td>'
+          + '<td>' + esc(a.motif) + '</td>'
+          + '<td>' + fmtDate(a.date_demande) + '</td>'
+          + '<td>' + esc(a.valide_par_nom || "—") + '</td>'
+          + '<td>' + (a.motif_refus ? '<span style="color:var(--danger)">Refus: ' + esc(a.motif_refus) + '</span>' : '—') + '</td>'
+          + '</tr>';
+      }).join('') + '</table></div>';
+  }).catch(function(e) { toast(e.message); });
+}
+
 function renderVersementsTraites(statut, boxId) {
   api("/versements").then(function(r) {
     const box = document.getElementById(boxId);
@@ -2680,10 +3641,13 @@ function renderVersementsTraites(statut, boxId) {
       }).join('') + '</table></div>';
   }).catch(function(e) { toast(e.message); });
 }
+
 renderers.versements = async function () {
   renderVersementsAttente();
+  renderAnnulationsAttente();
   renderVersementsTraites("valide", "versementValidesBox");
   renderVersementsTraites("refuse", "versementRefusesBox");
+  renderAnnulationsHist();
 };
 renderers.credits = async function () {
   const box = $("#creditsBox");
@@ -2711,14 +3675,26 @@ renderers.credits = async function () {
     </div>`;
   box.querySelectorAll("[data-payer]").forEach(b => b.addEventListener("click", () => {
     const id = b.dataset.payer;
-    askPrompt("💰 Remboursement crédit", b.dataset.reste, val => {
+    const targetCredit = list.find(x => String(x.id) === String(id));
+    askPrompt("💰 Remboursement crédit (" + esc(targetCredit ? targetCredit.client_nom : "") + ")", b.dataset.reste, val => {
       const montant = Number(String(val || "").replace(",", "."));
       if (!montant || montant <= 0) { toast("Montant invalide"); return; }
       (async () => {
         try {
-          await api("/credits/" + id + "/payer", { method: "POST", body: JSON.stringify({ montant }) });
+          const res = await api("/credits/" + id + "/payer", { method: "POST", body: JSON.stringify({ montant, mode: "especes" }) });
           toast("Remboursement enregistré ✅");
           renderers.credits();
+          if (res) {
+            const bq = DB.boutique || {};
+            const txt = `═══════════════════════\nREÇU DE RÈGLEMENT DE CRÉDIT\n${fmtDate(new Date().toISOString())}\nClient : ${esc(res.client_nom || "Client")}\nTicket d'origine : ${esc(res.numero || "—")}\n═══════════════════════\nTotal initial : ${money(res.net)}\nMontant versé : ${money(montant)}\nMode : Espèces\nReste à payer : ${money(res.reste)}\n═══════════════════════\n${esc(bq.pied || "Merci de votre confiance !")}`;
+            openModal(`<h3>🧾 Reçu de règlement</h3>
+              <div class="ticket-preview">${esc(txt)}</div>
+              <div class="row" style="margin-top:12px">
+                <button class="btn primary grow" id="printRecuCreditBtn">🖨️ Imprimer</button>
+                <button class="btn ghost grow" onclick="closeModal()">Fermer</button>
+              </div>`);
+            $("#printRecuCreditBtn").addEventListener("click", () => printDoc("Reçu de règlement", `<div class="ticket-preview">${esc(txt)}</div>`));
+          }
         } catch (e) { toast(e.message); }
       })();
     });
@@ -2747,22 +3723,47 @@ function showHelp() {
 function renderVersementConfig() {
   const loadUsers = !DB.users || !DB.users.length ? api("/users").then(function(u) { DB.users = u; }).catch(function() {}) : Promise.resolve();
   loadUsers.then(function() {
-  api("/parametres").then(function(rows) {
-    var p = {};
-    rows.forEach(function(r) { p[r.cle] = r.valeur; });
-    var validateur = p.versement_validateur || "admin";
-    var box = document.getElementById("versementConfigBox");
-    if (!box) return;
-    box.innerHTML = '<label class="field">Validateur des versements <select id="vcSel">'
-      + (DB.users || []).map(function(u) { return '<option value="' + esc(u.nom) + '"' + (u.nom === validateur ? ' selected' : '') + '>' + esc(u.nom) + ' (' + esc(u.role_code) + ')</option>'; }).join('')
-      + '</select></label>'
-      + '<p class="muted">L\'utilisateur sélectionné recevra les demandes de versement et pourra les valider ou les refuser. L\'admin garde toujours ce droit.</p>'
-      + '<button class="btn primary" id="vcSave">Enregistrer</button>';
-    document.getElementById("vcSave").addEventListener("click", async function() {
-      try { await api("/parametres", { method: "PUT", body: JSON.stringify({ versement_validateur: document.getElementById("vcSel").value }) }); toast("Validateur enregistré"); }
-      catch (e) { toast(e.message); }
-    });
-  }).catch(function(e) { toast(e.message); });
+    api("/parametres").then(function(rows) {
+      var p = {};
+      rows.forEach(function(r) { p[r.cle] = r.valeur; });
+      var validateurVers = p.versement_validateur || "admin";
+      var validateurAnnul = p.annulation_validateur || "admin";
+      var box = document.getElementById("versementConfigBox");
+      if (!box) return;
+      box.innerHTML = `
+        <div style="margin-bottom:18px">
+          <label class="field">Validateur des versements
+            <select id="vcSel">
+              ${(DB.users || []).map(function(u) { return '<option value="' + esc(u.nom) + '"' + (u.nom === validateurVers ? ' selected' : '') + '>' + esc(u.nom) + ' (' + esc(u.role_code) + ')</option>'; }).join('')}
+            </select>
+          </label>
+          <p class="muted" style="margin:4px 0 0">L'utilisateur sélectionné recevra et validera les demandes de versement de caisse. L'admin conserve toujours ce droit.</p>
+        </div>
+
+        <div style="margin-bottom:18px;padding-top:14px;border-top:1px solid var(--border)">
+          <label class="field">Validateur des annulations de vente
+            <select id="annulValidateurSel">
+              ${(DB.users || []).map(function(u) { return '<option value="' + esc(u.nom) + '"' + (u.nom === validateurAnnul ? ' selected' : '') + '>' + esc(u.nom) + ' (' + esc(u.role_code) + ')</option>'; }).join('')}
+            </select>
+          </label>
+          <p class="muted" style="margin:4px 0 0">Seul cet utilisateur (ou un Administrateur) pourra autoriser l'annulation d'un ticket de caisse déjà validé.</p>
+        </div>
+
+        <button class="btn primary" id="vcSave">💾 Enregistrer les validateurs</button>
+      `;
+      document.getElementById("vcSave").addEventListener("click", async function() {
+        try {
+          const vVers = document.getElementById("vcSel").value;
+          const vAnnul = document.getElementById("annulValidateurSel").value;
+          await Promise.all([
+            api("/parametres", { method: "PUT", body: JSON.stringify({ versement_validateur: vVers }) }),
+            api("/parametres", { method: "PUT", body: JSON.stringify({ annulation_validateur: vAnnul }) })
+          ]);
+          DB.params = await api("/parametres");
+          toast("Validateurs enregistrés avec succès ✅");
+        } catch (e) { toast(e.message); }
+      });
+    }).catch(function(e) { toast(e.message); });
   });
 }
 
@@ -2790,6 +3791,10 @@ function bind() {
   });
   $("#scanBtn").addEventListener("click", openScan);
   $("#encaisserBtn").addEventListener("click", encaisser);
+  if ($("#holdCartBtn")) $("#holdCartBtn").addEventListener("click", holdCart);
+  if ($("#clearCartBtn")) $("#clearCartBtn").addEventListener("click", () => {
+    if (cart.length) askConfirm("Vider le panier ?", "Retirer tous les articles du panier en cours ?", () => { cart = []; renderCart(); toast("Panier vidé"); }, { danger: true, okLabel: "Vider" });
+  });
   $("#cartRemise").addEventListener("input", renderCart);
   $("#cartMode").addEventListener("change", renderCart);
   $("#cartRecu").addEventListener("input", renderCart);
@@ -2826,21 +3831,9 @@ document.addEventListener("keydown", function(e) {
       if (e.key === "F5") { e.preventDefault(); e.stopImmediatePropagation(); var m = document.getElementById("cartMode"); if (m) { m.selectedIndex = (m.selectedIndex + 1) % m.options.length; renderCart(); } return; }
       if (e.key === "F6") {
         e.preventDefault();
-        var suspended = JSON.parse(localStorage.getItem("gs_suspended") || "[]");
-        if (cart.length > 0) {
-          suspended.push({ items: cart, date: new Date().toISOString(), mode: ($("#cartMode") || {}).value || "especes", remise: ($("#cartRemise") || {}).value || 0 });
-          localStorage.setItem("gs_suspended", JSON.stringify(suspended));
-          cart = []; renderCart();
-          toast("Vente suspendue (" + suspended.length + " en attente)");
-        } else if (suspended.length > 0) {
-          var last = suspended.pop();
-          localStorage.setItem("gs_suspended", JSON.stringify(suspended));
-          cart = last.items || [];
-          if ($("#cartMode")) $("#cartMode").value = last.mode || "especes";
-          if ($("#cartRemise")) $("#cartRemise").value = last.remise || 0;
-          renderCart();
-          toast("Vente reprise (" + suspended.length + " encore en attente)");
-        } else { toast("Aucune vente suspendue"); }
+        if (cart.length > 0) holdCart();
+        else if (heldCarts.length > 0) resumeCart(heldCarts[heldCarts.length - 1].id);
+        else toast("Aucun ticket en attente");
         return;
       }
       if (e.key === "F7") { e.preventDefault(); if (cart.length) { cart.pop(); renderCart(); toast("Dernier article retiré"); } return; }
@@ -2896,6 +3889,11 @@ document.addEventListener("keydown", function(e) {
     document.querySelectorAll("#view-versements .ptab").forEach(p => p.classList.add("hidden"));
     const target = document.getElementById("vtab-" + b.dataset.vtab);
     if (target) target.classList.remove("hidden");
+    if (b.dataset.vtab === "attente") renderVersementsAttente();
+    if (b.dataset.vtab === "annulations") renderAnnulationsAttente();
+    if (b.dataset.vtab === "valides") renderVersementsTraites("valide", "versementValidesBox");
+    if (b.dataset.vtab === "refuses") renderVersementsTraites("refuse", "versementRefusesBox");
+    if (b.dataset.vtab === "annulations-hist") renderAnnulationsHist();
   }));
   document.querySelectorAll("[data-ptab]").forEach(b => b.addEventListener("click", () => {
     document.querySelectorAll("[data-ptab]").forEach(x => x.classList.remove("on"));
@@ -2907,6 +3905,7 @@ document.addEventListener("keydown", function(e) {
     if (b.dataset.ptab === "journal") renderers.journal().catch(() => {});
     if (b.dataset.ptab === "personnel") renderers.users().catch(() => {});
     if (b.dataset.ptab === "boutique") renderers.params().catch(() => {});
+    if (b.dataset.ptab === "sauvegarde") { /* ready */ }
   }));
   $("#rapPrintBtn").addEventListener("click", () => {
     imprimer("Rapport", `<h2>Rapport du ${$("#rapFrom").value} au ${$("#rapTo").value} (par ${$("#rapGroup").value})</h2>` + $("#rapportBox").innerHTML, "A4");
@@ -2931,6 +3930,48 @@ document.addEventListener("keydown", function(e) {
     a.href = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));
     a.download = "journal-audit.csv"; a.click();
   });
+  const pinBtn = $("#pinLockBtn");
+  if (pinBtn) pinBtn.addEventListener("click", pinLockModal);
+
+  const newClBtn = $("#newClientBtn");
+  if (newClBtn) newClBtn.addEventListener("click", () => clientForm(null));
+
+  const quickAddCl = $("#cartQuickAddClientBtn");
+  if (quickAddCl) quickAddCl.addEventListener("click", () => clientForm(null));
+
+  document.addEventListener("click", e => {
+    const btn = e.target && e.target.closest ? e.target.closest("#newClientBtn, #cartQuickAddClientBtn, #pinLockBtn") : null;
+    if (!btn) return;
+    if (btn.id === "newClientBtn" || btn.id === "cartQuickAddClientBtn") {
+      e.preventDefault();
+      clientForm(null);
+    } else if (btn.id === "pinLockBtn") {
+      e.preventDefault();
+      pinLockModal();
+    }
+  });
+
+  const clSearch = $("#clientSearch");
+  if (clSearch) clSearch.addEventListener("input", () => renderers.clients().catch(() => {}));
+
+  const cartClSel = $("#cartClientSel");
+  if (cartClSel) cartClSel.addEventListener("change", updateCartClientInfo);
+
+  const bkBtn = $("#backupExportBtn");
+  if (bkBtn) bkBtn.addEventListener("click", async () => {
+    bkBtn.disabled = true; bkBtn.textContent = "Téléchargement...";
+    try {
+      const data = await api("/backup/export");
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "sauvegarde-gsv-" + todayKey() + ".json";
+      a.click();
+      toast("Sauvegarde téléchargée avec succès 💾");
+    } catch (e) { toast(e.message); }
+    bkBtn.disabled = false; bkBtn.textContent = "💾 Télécharger la sauvegarde complète (JSON)";
+  });
+
   $("#modal").addEventListener("click", e => { if (e.target === $("#modal")) closeModal(); });
 }
 async function init() {

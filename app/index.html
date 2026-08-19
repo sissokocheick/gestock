@@ -42,6 +42,7 @@
     </div>
     <div class="topbar-right">
       <span id="connDot" class="conn-dot" title="Connexion"></span><span id="curUser" class="chip"></span>
+      <button id="pinLockBtn" class="btn ghost small" title="Verrouillage rapide PIN">🔒</button>
       <button id="helpBtn" class="btn ghost small" title="Raccourcis clavier">⌨️</button>
       <button id="themeBtn" class="btn ghost small" title="Mode sombre / clair">🌙</button>
       <button id="refreshBtn" class="btn ghost small" title="Actualiser la page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Actualiser</button>
@@ -52,12 +53,13 @@
   <nav id="sideNav" class="sidenav">
     <a class="nav-link active" data-view="accueil"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg><span class="nav-label">Tableau de bord</span></a>
     <a class="nav-link" data-view="vente" data-right="R_VENTE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg><span class="nav-label">Caisse</span></a>
+    <a class="nav-link" data-view="clients" data-right="R_CLIENTS"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span class="nav-label">Clients</span></a>
     <a class="nav-link" data-view="releve" data-right="R_VENTE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg><span class="nav-label">Ma journée</span></a>
     <a class="nav-link" data-view="produits" data-right="R_PRODUITS"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg><span class="nav-label">Catalogue</span></a>
     <a class="nav-link" data-view="stock" data-right="R_STOCK"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg><span class="nav-label">Stocks</span></a>
     <a class="nav-link" data-view="point" data-right="R_POINT"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><span class="nav-label">Clôture de caisse</span></a>
-        <a class="nav-link" data-view="versements" data-right="R_POINT"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/></svg><span class="nav-label">Versements</span><span id="notifBadge" class="notif-badge hidden">0</span></a>
-<a class="nav-link" data-view="credits" data-right="R_VENTE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg><span class="nav-label">Crédits</span></a>
+    <a class="nav-link" data-view="versements" data-right="R_POINT"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg><span class="nav-label">Validations</span><span id="notifBadge" class="notif-badge hidden">0</span></a>
+    <a class="nav-link" data-view="credits" data-right="R_VENTE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg><span class="nav-label">Crédits</span></a>
     <a class="nav-link" data-view="depenses" data-right="R_RAPPORTS"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="8 12 12 16 16 12"/><line x1="12" y1="8" x2="12" y2="16"/></svg><span class="nav-label">Dépenses</span></a>
     <a class="nav-link" data-view="rapports" data-right="R_RAPPORTS"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg><span class="nav-label">Bénéfices</span></a>
     <a class="nav-link" data-view="params"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="nav-label">Paramètres</span></a>
@@ -72,6 +74,8 @@
       <div id="dashCards" class="cards"></div>
       <h3>Alertes stock</h3>
       <div id="dashAlerts" class="panel"></div>
+      <h3>🛡️ Alertes opérationnelles</h3>
+      <div id="dashAlertes" class="panel"></div>
       <h3>⏰ Péremption proche</h3>
       <div id="dashPeremptions" class="panel"></div>
       <h3>Top produits du jour</h3>
@@ -104,7 +108,21 @@
           <div id="venteGrid" class="prod-grid"></div>
         </div>
         <aside class="cart panel">
-          <h3>Panier</h3>
+          <div class="row" style="align-items:center;margin-bottom:6px">
+            <h3 class="grow" style="margin:0">Panier</h3>
+            <button id="holdCartBtn" class="btn small" title="Mettre le panier en attente" type="button">⏸️ En attente</button>
+            <button id="clearCartBtn" class="btn small ghost" title="Vider le panier" type="button">🗑️</button>
+          </div>
+          <div class="field" style="margin-bottom:8px">
+            <div class="row" style="gap:4px;align-items:center">
+              <select id="cartClientSel" class="grow" style="font-size:12px;padding:6px 8px">
+                <option value="">👤 Client passager (Comptoir)</option>
+              </select>
+              <button id="cartQuickAddClientBtn" class="btn small ghost" title="Nouveau client" type="button">➕</button>
+            </div>
+            <div id="cartClientInfo" class="muted hidden" style="font-size:11px;margin-top:3px"></div>
+          </div>
+          <div id="heldCartsWrap" class="held-wrap hidden"></div>
           <div id="cartLines"></div>
           <div class="cart-total">
             <span>Total</span><b id="cartTotal">0 F</b>
@@ -207,23 +225,29 @@
     <!-- PARAMÈTRES -->
         <!-- VERSEMENTS -->
     <section id="view-versements" class="view">
-      <h2>💰 Versements</h2>
+      <h2>🛡️ Validations des flux sensibles</h2>
       <div class="tabs" style="margin-bottom:10px">
-        <button class="tab on" data-vtab="attente">En attente</button>
-        <button class="tab" data-vtab="valides">Acceptés</button>
-        <button class="tab" data-vtab="refuses">Refusés / Annulés</button>
+        <button class="tab on" data-vtab="attente">💰 Versements en attente <span id="vBadgeAttente" class="badge-mini hidden">0</span></button>
+        <button class="tab" data-vtab="annulations">↩️ Annulations de vente en attente <span id="vBadgeAnnul" class="badge-mini hidden">0</span></button>
+        <button class="tab" data-vtab="valides">✅ Versements acceptés</button>
+        <button class="tab" data-vtab="refuses">❌ Versements refusés</button>
+        <button class="tab" data-vtab="annulations-hist">📜 Historique des annulations</button>
       </div>
       <div id="vtab-attente" class="ptab"><div id="versementBox" class="panel"></div></div>
+      <div id="vtab-annulations" class="ptab hidden"><div id="annulationsBox" class="panel"></div></div>
       <div id="vtab-valides" class="ptab hidden"><div id="versementValidesBox" class="panel"></div></div>
       <div id="vtab-refuses" class="ptab hidden"><div id="versementRefusesBox" class="panel"></div></div>
+      <div id="vtab-annulations-hist" class="ptab hidden"><div id="annulationsHistBox" class="panel"></div></div>
     </section>
 
-<section id="view-params" class="view">
+    <!-- PARAMÈTRES -->
+    <section id="view-params" class="view">
       <h2>⚙️ Paramètres</h2>
       <div class="tabs" style="margin-bottom:10px">
         <button class="tab on" data-ptab="boutique">🏪 Boutique</button>
         <button class="tab" data-ptab="personnel">👥 Personnel</button>
-        <button class="tab" data-ptab="versements">⚙️ Versements (réglage)</button>
+        <button class="tab" data-ptab="versements">⚙️ Validations (versements &amp; annulations)</button>
+        <button class="tab" data-ptab="sauvegarde">💾 Sauvegarde &amp; Restauration</button>
         <button class="tab" data-ptab="journal" data-right="R_JOURNAL">📜 Journal</button>
       </div>
       <div id="ptab-boutique" class="ptab"><div id="paramsBox" class="panel"></div></div>
@@ -233,8 +257,17 @@
         <div id="usersWrap" class="panel"></div>
       </div>
       <div id="ptab-versements" class="ptab hidden">
-        <h3>⚙️ Paramètre des versements</h3>
+        <h3>⚙️ Validateurs des flux sensibles (Versements &amp; Annulations)</h3>
         <div id="versementConfigBox" class="panel"></div>
+      </div>
+      <div id="ptab-sauvegarde" class="ptab hidden">
+        <h3>💾 Sauvegarde Intégrale de la Base de Données</h3>
+        <div class="panel">
+          <p class="muted">Téléchargez une sauvegarde complète (produits, stocks, clients, historique des ventes, caisses, audit) au format JSON pour mettre vos données en sécurité sur une clé USB ou dans le cloud.</p>
+          <div class="row" style="margin-top:14px">
+            <button id="backupExportBtn" class="btn primary">💾 Télécharger la sauvegarde complète (JSON)</button>
+          </div>
+        </div>
       </div>
       <div id="ptab-journal" class="ptab hidden">
         <div class="row wrap"><h2 class="grow" style="margin:0">Journal d'activité</h2>
@@ -245,16 +278,23 @@
       </div>
     </section>
 
-    <!-- PARAMETRES -->
-    
+    <!-- CLIENTS -->
+    <section id="view-clients" class="view">
+      <div class="row wrap" style="align-items:center;margin-bottom:10px">
+        <h2 class="grow" style="margin:0">👥 Répertoire Clients &amp; Fidélité</h2>
+        <input id="clientSearch" placeholder="🔎 Rechercher un client (nom, tél, adresse)…" style="max-width:280px">
+        <button id="newClientBtn" class="btn primary" type="button">+ Nouveau client</button>
+      </div>
+      <div id="clientsBox" class="panel"></div>
+    </section>
 
-  
-    <!-- DÉPENSES -->
+    <!-- CRÉDITS -->
     <section id="view-credits" class="view">
       <h2>💳 Crédits clients</h2>
       <div id="creditsBox"></div>
     </section>
 
+    <!-- DÉPENSES -->
     <section id="view-depenses" class="view">
       <div id="depensesBox" class="panel"></div>
     </section>
@@ -267,7 +307,7 @@
 
 <script src="js/JsBarcode.min.js"></script>
 <script src="js/html5-qrcode.min.js"></script>
-<script src="app.js?v=3"></script>
-<script src="app-stock.js?v=3"></script>
+<script src="app.js?v=13"></script>
+<script src="app-stock.js?v=13"></script>
 </body>
 </html>
