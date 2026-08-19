@@ -148,13 +148,20 @@ app.post("/api/auth/pin-login", async (req, res) => {
   const userId = Number(req.body.user_id);
   if (!pin || pin.length < 4) return res.status(400).json({ error: "Code PIN à 4 chiffres requis" });
   if (!userId) return res.status(400).json({ error: "Session introuvable — reconnectez-vous" });
+  const keyPin = "pin:" + userId;
+  const waitPin = loginCheck(keyPin);
+  if (waitPin > 0) {
+    res.set("Retry-After", String(waitPin));
+    return res.status(429).json({ error: "Trop de tentatives PIN. Réessayez dans " + Math.max(1, Math.ceil(waitPin / 60)) + " min." });
+  }
   const { rows } = await pool.query("SELECT * FROM users WHERE id = $1 AND actif = true", [userId]);
   const u = rows[0];
   if (!u) return res.status(401).json({ error: "Compte introuvable ou inactif" });
   if (!u.pin_code) return res.status(403).json({ error: "Aucun code PIN configuré pour ce compte. Demandez à l'administrateur." });
-  if (String(u.pin_code).trim() !== pin) return res.status(401).json({ error: "Code PIN incorrect" });
+  if (String(u.pin_code).trim() !== pin) { loginFail(keyPin); return res.status(401).json({ error: "Code PIN incorrect" }); }
   await pool.query("UPDATE users SET derniere_connexion = now() WHERE id = $1", [u.id]);
   u.derniere_connexion = new Date();
+  loginOk(keyPin);
   await auditEvent(u, "Connexion PIN", "Déverrouillage par code PIN de " + u.nom);
   res.json({ token: sign(u), user: await safeUser(u) });
 });

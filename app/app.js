@@ -50,6 +50,7 @@ async function restoreSession() {
   try {
     const me = await api("/auth/me");
     cur = me;
+    if (sessionStorage.getItem("gs_locked") === "1" && cur && cur.pin_set) pinLockModal();
     await showApp();
   } catch (e) {
     // Token expired — clear and show login
@@ -237,6 +238,7 @@ function showLogin() {
 function showLoginErr(msg) { $("#loginErr").textContent = msg; $("#loginErr").classList.remove("hidden"); }
 function doLogout() {
   token = null; localStorage.removeItem("gs_token");
+  sessionStorage.removeItem("gs_locked");
   if (ws) { try { ws.close(); } catch (e) { } ws = null; }
   cur = null; cart = [];
   $("#app").classList.add("hidden"); $("#login").classList.remove("hidden");
@@ -2778,6 +2780,7 @@ function pinLockModal() {
       <button class="btn ghost small" id="lockLogoutBtn" style="margin-top:12px">↪️ Se déconnecter</button>
     </div>`;
   box.classList.remove("hidden");
+  sessionStorage.setItem("gs_locked", "1");
   const disp = $("#pinDisplay");
   const updateDisp = () => { disp.textContent = pinVal ? "•".repeat(pinVal.length).padEnd(4, "–") : "••••"; };
   const unlock = async () => {
@@ -2788,6 +2791,7 @@ function pinLockModal() {
       localStorage.setItem("gs_token", token);
       cur = res.user;
       box.classList.add("hidden");
+      sessionStorage.removeItem("gs_locked");
       toast("Caisse déverrouillée : " + cur.nom + " ✅");
       await showApp();
     } catch (e) {
