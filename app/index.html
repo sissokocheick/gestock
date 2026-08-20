@@ -164,6 +164,7 @@
           <h2 class="grow">Catalogue produits</h2>
           <select id="prodFamilleFilter"><option value="">Toutes les familles</option></select>
           <input id="prodSearch" placeholder="Rechercher."> <label class="field" style="display:flex;align-items:center;gap:6px;margin:0;white-space:nowrap"><input type="checkbox" id="prodMasqInactifs" style="width:auto" checked> Masquer inactifs</label>
+          <div class="toggle-view" id="prodViewToggle"><button class="active" data-viewmode="list" title="Vue liste">📋</button><button data-viewmode="grid" title="Vue grille">🔲</button></div>
           <button id="newProdBtn" class="btn primary">+ Nouveau produit</button>
         </div>
         <div id="prodWrap" class="panel"></div>
@@ -245,12 +246,16 @@
       <h2>⚙️ Paramètres</h2>
       <div class="tabs" style="margin-bottom:10px">
         <button class="tab on" data-ptab="boutique">🏪 Boutique</button>
+        <button class="tab" data-ptab="familles">🏷️ Familles</button>
         <button class="tab" data-ptab="personnel">👥 Personnel</button>
         <button class="tab" data-ptab="versements">⚙️ Validations (versements &amp; annulations)</button>
         <button class="tab" data-ptab="sauvegarde">💾 Sauvegarde &amp; Restauration</button>
         <button class="tab" data-ptab="journal" data-right="R_JOURNAL">📜 Journal</button>
       </div>
       <div id="ptab-boutique" class="ptab"><div id="paramsBox" class="panel"></div></div>
+      <div id="ptab-familles" class="ptab hidden">
+        <div id="famillesBox" class="panel"></div>
+      </div>
       <div id="ptab-personnel" class="ptab hidden">
         <div class="row wrap"><h2 class="grow" style="margin:0">Personnel &amp; droits</h2>
         <button id="newUserBtn" class="btn primary">+ Nouvel utilisateur</button> <button id="roleManagerBtn" class="btn ghost">⚙️ Gérer les rôles</button></div>

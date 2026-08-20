@@ -547,6 +547,105 @@ tr:hover td.sticky-l, tr:hover td.sticky-r { background: var(--thead); }
   display: flex; align-items: center; justify-content: center;
   padding: 16px;
 }
+/* ============================================================
+   v3 — Animations, skeleton loading, polish UI
+   ============================================================ */
+
+/* --- transitions fluides entre les vues --- */
+.view.active {
+  animation: viewFadeIn .22s ease-out;
+}
+@keyframes viewFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* --- skeleton loading --- */
+.skeleton {
+  background: linear-gradient(90deg, var(--border-soft) 25%, var(--bg) 50%, var(--border-soft) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 8px;
+  min-height: 18px;
+}
+.skeleton-line { height: 14px; margin-bottom: 8px; }
+.skeleton-line.w60 { width: 60%; }
+.skeleton-line.w80 { width: 80%; }
+.skeleton-line.w40 { width: 40%; }
+.skeleton-card { height: 80px; border-radius: var(--radius); }
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* --- bouton connexion : spinner --- */
+.login-card .btn.loading {
+  pointer-events: none;
+  opacity: .7;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.login-card .btn.loading::after {
+  content: "";
+  width: 16px; height: 16px;
+  border: 2px solid rgba(255,255,255,.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- boutons génériques loading --- */
+.btn.loading {
+  pointer-events: none;
+  opacity: .7;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.btn.loading::after {
+  content: "";
+  width: 14px; height: 14px;
+  border: 2px solid rgba(255,255,255,.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+}
+
+/* --- flash sur les cartes ( ajout au panier) --- */
+.prod-card.added {
+  animation: cardAdded .35s;
+}
+@keyframes cardAdded {
+  0% { box-shadow: 0 0 0 3px var(--success); }
+  100% { box-shadow: var(--shadow); }
+}
+
+/* --- notification badge pulse --- */
+.notif-badge {
+  animation: notifPulse 2s infinite;
+}
+@keyframes notifPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+
+/* --- toggle grille/liste catalogue --- */
+.toggle-view { display: flex; gap: 0; }
+.toggle-view button {
+  padding: 7px 12px; border: 1px solid var(--border);
+  background: var(--panel); cursor: pointer; font-size: 14px;
+  color: var(--muted); transition: .15s;
+}
+.toggle-view button:first-child { border-radius: 8px 0 0 8px; }
+.toggle-view button:last-child { border-radius: 0 8px 8px 0; }
+.toggle-view button.active {
+  background: var(--primary); color: #fff; border-color: var(--primary);
+}
+
 .lock-screen.hidden { display: none; }
 .lock-box {
   width: 100%; max-width: 320px; text-align: center;

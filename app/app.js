@@ -217,6 +217,9 @@ async function doLogin() {
   const nom = $("#loginUser").value.trim();
   const mdp = $("#loginPass").value;
   if (!nom || !mdp) { showLoginErr("Nom et mot de passe obligatoires"); return; }
+  const btn = $("#loginBtn");
+  btn.classList.add("loading"); btn.disabled = true; btn.textContent = "Connexion…";
+  $("#loginErr").classList.add("hidden");
   try {
     const r = await api("/auth/login", { method: "POST", body: JSON.stringify({ nom, mdp }) });
     token = r.token; localStorage.setItem("gs_token", token);
@@ -224,6 +227,7 @@ async function doLogin() {
     $("#loginPass").value = "";
     await showApp();
   } catch (e) { showLoginErr(e.message); }
+  btn.classList.remove("loading"); btn.disabled = false; btn.textContent = "Se connecter";
 }
 function showLogin() {
   const app = document.getElementById("app");
@@ -310,7 +314,20 @@ function go(view) {
 const VIEW_BOX = { accueil: "#dashCards", vente: "#venteGrid", releve: "#releveBox", produits: "#prodWrap", stock: "#stockWrap", point: "#pointBox", users: "#usersWrap", rapports: "#rapportBox", journal: "#journalWrap", params: "#paramsBox", depenses: "#depensesBox", versements: "#versementBox", credits: "#creditsBox", clients: "#clientsBox" };
 function viewLoading(view) {
   const sel = VIEW_BOX[view];
-  if (sel) { const el = $(sel); if (el) el.innerHTML = `<div class="empty">⏳ Chargement…</div>`; }
+  if (!sel) return;
+  const el = $(sel);
+  if (!el) return;
+  /* Skeleton cards pour l'accueil, skeleton lignes pour les tableaux */
+  if (view === "accueil") {
+    el.innerHTML = `<div class="cards">${Array(5).fill(0).map(() => `<div class="card"><div class="skeleton skeleton-line w60"></div><div class="skeleton skeleton-card" style="height:32px;margin-top:6px"></div></div>`).join("")}</div>`;
+    $("#dashAlerts").innerHTML = `<div class="skeleton skeleton-line w80"></div><div class="skeleton skeleton-line w60"></div>`;
+    $("#dashTop").innerHTML = `<div class="skeleton skeleton-line w80"></div><div class="skeleton skeleton-line w60"></div>`;
+    $("#dashChart").innerHTML = `<div class="skeleton" style="height:150px"></div>`;
+  } else if (view === "vente") {
+    /* pas de skeleton pour la caisse, on garde le panier actuel */
+  } else {
+    el.innerHTML = `<div class="skeleton skeleton-line w80"></div><div class="skeleton skeleton-line w60"></div><div class="skeleton skeleton-line w80"></div><div class="skeleton skeleton-line w40"></div>`;
+  }
 }
 function viewErreurReseau(view) {
   const sel = VIEW_BOX[view];
@@ -369,7 +386,7 @@ renderers.accueil = async function () {
     ? `<div class="empty">✅ Aucune alerte stock aujourd'hui</div>`
     : `<div class="table-wrap"><table><tr><th>Produit</th><th>Stock</th><th>Seuil mini</th><th>Statut</th></tr>` +
       alerts.map(p => `<tr data-prodid="${p.id}" style="cursor:pointer" title="Cliquer pour modifier"><td>${esc(p.nom)}</td><td class="num">${p.stock}</td><td class="num">${p.stock_min}</td><td><span class="badge ${Number(p.stock) <= 0 ? "bad" : "warn"}">${Number(p.stock) <= 0 ? "Rupture" : "Stock bas"}</span></td></tr>`).join("") + `</table></div>`;
-  $("#dashAlerts tr[data-prodid]").forEach(r => r.addEventListener("click", () => { const p = prods.find(x => String(x.id) === String(r.dataset.prodid)); if (p) prodForm(p); }));
+  $$("#dashAlerts tr[data-prodid]").forEach(r => r.addEventListener("click", () => { const p = prods.find(x => String(x.id) === String(r.dataset.prodid)); if (p) prodForm(p); }));
   const dpBox = $("#dashPeremptions");
   if (dpBox) {
     if (hasRight("R_STOCK")) {
@@ -384,7 +401,7 @@ renderers.accueil = async function () {
               const dstr = isNaN(e) ? String(x.date_peremption).slice(0, 10) : (e.getFullYear() + "-" + String(e.getMonth() + 1).padStart(2, "0") + "-" + String(e.getDate()).padStart(2, "0"));
               return `<tr style="cursor:pointer" data-prodid="${x.produit_id}" title="Ouvrir le produit"><td>${esc(x.nom)}</td><td>${esc(x.numero || "—")}</td><td class="num">${x.qte_restante}</td><td>${fmtDateOnly(dstr)}</td><td><span class="badge ${jours <= 7 ? "bad" : "warn"}">${jours} j</span></td></tr>`;
             }).join("") + `</table></div>`;
-        $("#dashPeremptions tr[data-prodid]").forEach(r => r.addEventListener("click", () => { const p = prods.find(y => String(y.id) === String(r.dataset.prodid)); if (p) prodForm(p); }));
+        $$("#dashPeremptions tr[data-prodid]").forEach(r => r.addEventListener("click", () => { const p = prods.find(y => String(y.id) === String(r.dataset.prodid)); if (p) prodForm(p); }));
       } catch (e) { dpBox.innerHTML = ""; }
     } else { dpBox.innerHTML = ""; }
   }
@@ -1374,6 +1391,94 @@ renderers.releve = async function () {
 
 /* ---------- produits ---------- */
 let prodMasqInactifs = true;
+/* --- helpers pour le rendu catalogue (liste / grille) --- */
+function _prodStockBadge(p) {
+  const n = Number(p.stock), mn = Number(p.stock_min);
+  const cls = n <= 0 ? "bad" : n <= mn ? "warn" : "ok";
+  return '<span class="badge ' + cls + '">' + n + '</span>';
+}
+function _prodStockMobile(p) {
+  const n = Number(p.stock), mn = Number(p.stock_min);
+  const cls = n <= 0 ? "bad" : n <= mn ? "warn" : "ok";
+  const label = n <= 0 ? "Rupture" : n <= mn ? "Stock bas" : "En stock";
+  return '<span class="badge ' + cls + '">' + label + ' \u00b7 ' + n + '</span>';
+}
+function _prodFlags(p) {
+  let h = '';
+  if (p.reference) h += ' <span class="muted" style="font-size:11px;font-family:monospace">' + esc(p.reference) + '</span>';
+  if (p.gere_par_lot) h += ' <span class="badge info" style="font-size:10px">\ud83d\udce6 Lot</span>';
+  if (!p.actif) h += ' <span class="badge off">inactif</span>';
+  return h;
+}
+function _prodActions(p) {
+  return '<div class="actions"><button class="btn small" data-edit="' + p.id + '">\u270f\ufe0f Modifier</button><button class="btn small" data-label="' + p.id + '">\ud83c\udff7\ufe0f \u00c9tiquette</button></div>';
+}
+function _prodMeta(p) {
+  let h = esc(p.famille || 'Sans famille');
+  if (p.code) h += ' &middot; <span style="font-family:monospace;font-size:11px">' + esc(p.code) + '</span>';
+  return h;
+}
+function _prodPrices(p) {
+  return '<span>Achat <b style="color:var(--ink)">' + money(p.prix_achat) + '</b></span>'
+    + '<span>Vente <b style="color:var(--primary)">' + money(p.prix_vente) + '</b></span>'
+    + '<span>Marge <b style="color:var(--success)">' + money(Number(p.prix_vente) - Number(p.prix_achat)) + '</b></span>';
+}
+function renderProdGrid(shown) {
+  const pg = pgSlice('produits', shown);
+  return '<p class="muted" style="margin:0 0 8px">' + shown.length + ' produit(s)</p>'
+    + pgBar('produits', shown.length, 'produit(s)')
+    + '<div class="prod-grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">'
+    + pg.part.map(function(p) {
+      return '<div class="card" style="cursor:pointer;position:relative">'
+        + '<div style="display:flex;gap:8px;align-items:start">'
+        + (p.photo ? '<img src="' + p.photo + '" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex:none">' : '')
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-weight:700;font-size:14px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p.nom) + ' ' + _prodFlags(p) + '</div>'
+        + '<div style="font-size:12px;color:var(--muted);margin-top:2px">' + _prodMeta(p) + '</div>'
+        + '</div>'
+        + _prodStockBadge(p).replace('badge', 'badge').replace('">', '" style="font-size:11px;flex:none">')
+        + '</div>'
+        + '<div style="display:flex;gap:12px;margin-top:8px;font-size:13px;color:var(--muted)">' + _prodPrices(p) + '</div>'
+        + '<div style="display:flex;gap:6px;margin-top:8px;border-top:1px dashed var(--border);padding-top:8px">' + _prodActions(p) + '</div>'
+        + '</div>';
+    }).join('')
+    + '</div>';
+}
+function renderProdTable(shown) {
+  var pg = pgSlice('produits', shown);
+  var h = '<p class="muted" style="margin:0 0 8px">' + shown.length + ' produit(s)' + (prodMasqInactifs ? ' - produits inactifs masqués' : '') + '</p>'
+    + pgBar('produits', shown.length, 'produit(s)')
+    + '<div class="table-wrap prod-table-d"><table>'
+    + '<tr><th>Photo</th><th>Produit</th><th>Famille</th><th>Code-barres</th><th class="num">Prix achat</th><th class="num">Prix vente</th><th class="num">Bénéfice</th><th class="num">Stock</th><th class="sticky-r">Actions</th></tr>';
+  pg.part.forEach(function(p) {
+    h += '<tr>'
+      + '<td>' + (p.photo ? '<img src="' + p.photo + '" style="width:36px;height:36px;object-fit:cover;border-radius:6px">' : '-') + '</td>'
+      + '<td>' + esc(p.nom) + ' ' + _prodFlags(p) + '</td>'
+      + '<td>' + esc(p.famille || '') + '</td>'
+      + '<td>' + esc(p.code || '-') + '</td>'
+      + '<td class="num">' + money(p.prix_achat) + '</td>'
+      + '<td class="num">' + money(p.prix_vente) + '</td>'
+      + '<td class="num">' + money(Number(p.prix_vente) - Number(p.prix_achat)) + '</td>'
+      + '<td class="num">' + _prodStockBadge(p) + '</td>'
+      + '<td class="sticky-r">' + _prodActions(p) + '</td>'
+      + '</tr>';
+  });
+  h += '</table></div>';
+  h += '<div class="prod-list-m">';
+  pg.part.forEach(function(p) {
+    h += '<div class="prod-card-m">'
+      + '<div class="pcm-head">'
+      + '<div class="pcm-name">' + esc(p.nom) + ' ' + _prodFlags(p) + '</div>'
+      + _prodStockMobile(p)
+      + '</div>'
+      + '<div class="pcm-meta">' + _prodMeta(p) + '</div>'
+      + '<div class="pcm-prices">' + _prodPrices(p) + '</div>'
+      + '<div class="pcm-actions">' + _prodActions(p) + '</div>'
+      + '</div>';
+  });
+  h += '</div>';
+  return h;
+}
 renderers.produits = async function () {
   let list = [];
   try {
@@ -1386,45 +1491,15 @@ renderers.produits = async function () {
   sel.innerHTML = `<option value="">Toutes les familles</option>` + fams.map(f => `<option ${sel.value === f.nom ? "selected" : ""}>${esc(f.nom)}</option>`).join("");
   const f = $("#prodSearch").value.toLowerCase();
   const shown = list.filter(p => (!prodMasqInactifs || p.actif) && (!sel.value || p.famille === sel.value) && (!f || p.nom.toLowerCase().includes(f) || (p.code || "").includes(f)));
-  $("#prodWrap").innerHTML = shown.length === 0 ? `<div class="empty">${prodMasqInactifs ? "Aucun produit actif - décochez \"Masquer inactifs\" pour tout voir" : "Aucun produit"}</div>` : `
-    <p class="muted" style="margin:0 0 8px">${shown.length} produit(s)${prodMasqInactifs ? " - produits inactifs masqués" : ""}</p>
-    ${shown.length > 0 ? pgBar("produits", shown.length, "produit(s)") : ""}
-    <div class="table-wrap prod-table-d"><table>
-      <tr><th>Photo</th><th>Produit</th><th>Famille</th><th>Code-barres</th><th class="num">Prix achat</th><th class="num">Prix vente</th><th class="num">Bénéfice</th><th class="num">Stock</th><th class="sticky-r">Actions</th></tr>
-      ${pgSlice("produits", shown).part.map(p => `<tr>
-        <td>${p.photo ? `<img src="${p.photo}" style="width:36px;height:36px;object-fit:cover;border-radius:6px">` : "-"}</td>
-        <td>${esc(p.nom)} ${p.reference ? `<span class="muted" style="font-size:11px;font-family:monospace">${esc(p.reference)}</span>` : ""} ${p.gere_par_lot ? `<span class="badge info" style="font-size:10px">📦 Lot</span>` : ""} ${p.actif ? "" : `<span class="badge off">inactif</span>`}</td>
-        <td>${esc(p.famille || "")}</td>
-        <td>${esc(p.code || "-")}</td>
-        <td class="num">${money(p.prix_achat)}</td>
-        <td class="num">${money(p.prix_vente)}</td>
-        <td class="num">${money(Number(p.prix_vente) - Number(p.prix_achat))}</td>
-        <td class="num"><span class="badge ${Number(p.stock) <= 0 ? "bad" : Number(p.stock) <= Number(p.stock_min) ? "warn" : "ok"}">${p.stock}</span></td>
-        <td class="sticky-r"><div class="actions">
-          <button class="btn small" data-edit="${p.id}">✏️ Modifier</button>
-          <button class="btn small" data-label="${p.id}">🏷️ Étiquette</button>
-        </div></td>
-      </tr>`).join("")}
-    </table></div>
-    <div class="prod-list-m">
-      ${pgSlice("produits", shown).part.map(p => `
-      <div class="prod-card-m">
-        <div class="pcm-head">
-          <div class="pcm-name">${esc(p.nom)}${p.gere_par_lot ? ` <span class="badge info" style="font-size:10px">📦</span>` : ""}${p.actif ? "" : ` <span class="badge off">inactif</span>`}</div>
-          <span class="badge ${Number(p.stock) <= 0 ? "bad" : Number(p.stock) <= Number(p.stock_min) ? "warn" : "ok"}">${Number(p.stock) <= 0 ? "Rupture" : Number(p.stock) <= Number(p.stock_min) ? "Stock bas" : "En stock"} · ${p.stock}</span>
-        </div>
-        <div class="pcm-meta">${esc(p.famille || "Sans famille")}${p.code ? ` · <span class="mono">${esc(p.code)}</span>` : ""}</div>
-        <div class="pcm-prices">
-          <span>Achat <b>${money(p.prix_achat)}</b></span>
-          <span>Vente <b>${money(p.prix_vente)}</b></span>
-          <span>Marge <b class="ok">${money(Number(p.prix_vente) - Number(p.prix_achat))}</b></span>
-        </div>
-        <div class="pcm-actions">
-          <button class="btn small" data-edit="${p.id}">✏️ Modifier</button>
-          <button class="btn small ghost" data-label="${p.id}">🏷️ Étiquette</button>
-        </div>
-      </div>`).join("")}
-    </div>`;
+  const viewMode = localStorage.getItem("gs_prodView") || "list";
+  const isGrid = viewMode === "grid";
+  if (shown.length === 0) {
+    $("#prodWrap").innerHTML = '<div class="empty">' + (prodMasqInactifs ? 'Aucun produit actif - décochez "Masquer inactifs" pour tout voir' : 'Aucun produit') + '</div>';
+  } else if (isGrid) {
+    $("#prodWrap").innerHTML = renderProdGrid(shown);
+  } else {
+    $("#prodWrap").innerHTML = renderProdTable(shown);
+  }
   $$("#prodWrap [data-edit]").forEach(b => b.addEventListener("click", () => prodForm(produitById(b.dataset.edit))));
   $$("#prodWrap [data-label]").forEach(b => b.addEventListener("click", () => {
     const p = produitById(b.dataset.label);
@@ -2107,6 +2182,97 @@ function famManager(host) {
     }
   }));
 }
+/* ---------- renderer familles (onglet Paramètres > Familles) ---------- */
+renderers.familles = async function () {
+  let fams = [];
+  try { fams = await api("/familles?all=1"); DB.familles = fams; } catch (e) { toast(e.message); return; }
+  const box = $("#famillesBox");
+  if (!box) return;
+  const active = fams.filter(f => f.actif !== false);
+  const archived = fams.filter(f => f.actif === false);
+  /* Construction HTML sans template literals imbriqués pour éviter les erreurs de syntaxe */
+  var h = '<div class="row" style="margin-bottom:12px;gap:8px">'
+    + '<input id="famNewInput" class="grow" placeholder="Nom de la nouvelle famille..." style="max-width:300px">'
+    + '<label class="field" style="display:flex;gap:6px;align-items:center;margin:0;white-space:nowrap"><input type="checkbox" id="famNewLot" style="width:auto"> 📦 Gérée par lot</label>'
+    + '<button class="btn primary" id="famAddBtn">+ Ajouter</button>'
+    + '</div>'
+    + '<p class="muted" style="margin:0 0 8px">' + active.length + ' famille(s) active(s)</p>';
+  if (active.length === 0) {
+    h += '<div class="empty">Aucune famille — créez-en une ci-dessus</div>';
+  } else {
+    h += '<div class="table-wrap"><table>'
+      + '<tr><th>Famille</th><th>Code</th><th>Géré par lot</th><th>Statut</th><th>Actions</th></tr>';
+    active.forEach(function(f) {
+      h += '<tr>'
+        + '<td style="font-weight:600">' + esc(f.nom) + '</td>'
+        + '<td><span style="font-family:monospace;font-size:12px;color:var(--muted)">' + esc(f.code || '-') + '</span></td>'
+        + '<td><span class="badge ' + (f.gere_par_lot ? 'info' : 'off') + '">' + (f.gere_par_lot ? 'Oui 📦' : 'Non') + '</span></td>'
+        + '<td><span class="badge ok">Active</span></td>'
+        + '<td><div class="actions">'
+        + '<button class="btn small" data-fren="' + f.id + '">✏️ Renommer</button>'
+        + '<button class="btn small" data-frlot="' + f.id + '" title="Activer/désactiver gestion par lot">📦 Lot</button>'
+        + '<button class="btn small ghost" data-frdis="' + f.id + '">🚫 Désactiver</button>'
+        + '</div></td></tr>';
+    });
+    h += '</table></div>';
+  }
+  if (archived.length > 0) {
+    h += '<h3 style="margin-top:18px">📦 Familles archivées (' + archived.length + ')</h3>'
+      + '<div class="table-wrap"><table>'
+      + '<tr><th>Famille</th><th>Statut</th><th>Action</th></tr>';
+    archived.forEach(function(f) {
+      h += '<tr>'
+        + '<td style="opacity:.6">' + esc(f.nom) + '</td>'
+        + '<td><span class="badge off">Archivée</span></td>'
+        + '<td><button class="btn small success" data-frreact="' + f.id + '">✅ Réactiver</button></td>'
+        + '</tr>';
+    });
+    h += '</table></div>';
+  }
+  box.innerHTML = h;
+  /* Event listeners */
+  const refresh = () => renderers.familles().catch(() => {});
+  box.querySelector("#famAddBtn").addEventListener("click", async () => {
+    const nom = box.querySelector("#famNewInput").value.trim();
+    if (!nom) { toast("Nom obligatoire"); return; }
+    try {
+      await api("/familles", { method: "POST", body: JSON.stringify({ nom, gere_par_lot: box.querySelector("#famNewLot").checked }) });
+      toast("Famille créée ✅");
+      box.querySelector("#famNewInput").value = "";
+      DB.familles = await api("/familles?all=1");
+      refresh();
+    } catch (e) { toast(e.message); }
+  });
+  box.querySelectorAll("[data-fren]").forEach(b => b.addEventListener("click", () => {
+    const f = active.find(x => String(x.id) === String(b.dataset.fren));
+    if (!f) return;
+    askPrompt("Renommer la famille", f.nom, async nv => {
+      if (!nv || !nv.trim()) return;
+      try { await api("/familles/" + f.id, { method: "PUT", body: JSON.stringify({ nom: nv.trim() }) }); toast("Famille renommée"); DB.familles = await api("/familles?all=1"); refresh(); } catch (e) { toast(e.message); }
+    });
+  }));
+  box.querySelectorAll("[data-frlot]").forEach(b => b.addEventListener("click", async () => {
+    const f = active.find(x => String(x.id) === String(b.dataset.frlot));
+    if (!f) return;
+    try {
+      await api("/familles/" + f.id, { method: "PUT", body: JSON.stringify({ nom: f.nom, gere_par_lot: !f.gere_par_lot }) });
+      toast(f.gere_par_lot ? "Gestion par lot désactivée" : "Gestion par lot activée");
+      DB.familles = await api("/familles?all=1"); refresh();
+    } catch (e) { toast(e.message); }
+  }));
+  box.querySelectorAll("[data-frdis]").forEach(b => b.addEventListener("click", () => {
+    const f = active.find(x => String(x.id) === String(b.dataset.frdis));
+    if (!f) return;
+    askConfirm("Désactiver la famille", `Désactiver <b>« ${f.nom} »</b> ? Les produits existants ne seront pas supprimés.`, async () => {
+      try { await api("/familles/" + f.id, { method: "DELETE" }); toast("Famille désactivée"); DB.familles = await api("/familles?all=1"); refresh(); } catch (e) { toast(e.message); }
+    }, { danger: true, okLabel: "🚫 Désactiver" });
+  }));
+  box.querySelectorAll("[data-frreact]").forEach(b => b.addEventListener("click", async () => {
+    const f = archived.find(x => String(x.id) === String(b.dataset.frreact));
+    if (!f) return;
+    try { await api("/familles/" + f.id, { method: "PUT", body: JSON.stringify({ nom: f.nom, gere_par_lot: f.gere_par_lot, actif: true }) }); toast("Famille réactivée ✅"); DB.familles = await api("/familles?all=1"); refresh(); } catch (e) { toast(e.message); }
+  }));
+};
 function mvForm(p, type, qteDefaut) {
   openModal(`<h3>${type} - ${esc(p.nom)}</h3>
     <label class="field">Quantité
@@ -3871,6 +4037,20 @@ document.addEventListener("keydown", function(e) {
   };
   catTabP.addEventListener("click", () => catShow("P"));
   catTabF.addEventListener("click", () => catShow("F"));
+  /* Toggle vue grille/liste pour le catalogue */
+  const viewToggle = $("#prodViewToggle");
+  if (viewToggle) {
+    const saved = localStorage.getItem("gs_prodView") || "list";
+    viewToggle.querySelectorAll("button").forEach(b => b.classList.toggle("active", b.dataset.viewmode === saved));
+    viewToggle.addEventListener("click", e => {
+      const btn = e.target.closest("[data-viewmode]");
+      if (!btn) return;
+      viewToggle.querySelectorAll("button").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      localStorage.setItem("gs_prodView", btn.dataset.viewmode);
+      renderers.produits().catch(() => {});
+    });
+  }
   $("#newUserBtn").addEventListener("click", () => userForm(null));
   $("#roleManagerBtn").addEventListener("click", roleManager);
   $("#rapGenBtn").addEventListener("click", () => genRapport().catch(e => toast(e.message)));
@@ -3897,6 +4077,7 @@ document.addEventListener("keydown", function(e) {
     if (b.dataset.ptab === "journal") renderers.journal().catch(() => {});
     if (b.dataset.ptab === "personnel") renderers.users().catch(() => {});
     if (b.dataset.ptab === "boutique") renderers.params().catch(() => {});
+    if (b.dataset.ptab === "familles") renderers.familles().catch(() => {});
     if (b.dataset.ptab === "sauvegarde") { /* ready */ }
   }));
   $("#rapPrintBtn").addEventListener("click", () => {

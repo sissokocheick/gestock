@@ -8,16 +8,18 @@ async function main() {
   const url = new URL(process.env.DATABASE_URL);
   const dbName = url.pathname.slice(1);
 
-  // 1) connexion au serveur (base "postgres") pour créer la base si besoin
-  const admin = new Pool({ connectionString: process.env.DATABASE_URL.replace("/" + dbName, "/postgres") });
+  // 1) tenter de créer la base (Render la crée déjà via le blueprint)
   try {
-    await admin.query(`CREATE DATABASE ${dbName}`);
-    console.log("✅ Base créée :", dbName);
+    const admin = new Pool({ connectionString: process.env.DATABASE_URL.replace("/" + dbName, "/postgres") });
+    try {
+      await admin.query(`CREATE DATABASE ${dbName}`);
+      console.log("✅ Base créée :", dbName);
+    } catch (e) {
+      if (e.code === "42P04") console.log("ℹ️  Base déjà existante :", dbName);
+      else console.log("⚠️  Impossible de créer la base (normal sur Render) :", e.message);
+    } finally { await admin.end(); }
   } catch (e) {
-    if (e.code === "42P04") console.log("ℹ️  Base déjà existante :", dbName);
-    else throw e;
-  } finally {
-    await admin.end();
+    console.log("ℹ️  Skip création base (URL pointe déjà vers la bonne base)");
   }
 
   // 2) application du schéma

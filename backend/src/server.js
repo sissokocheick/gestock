@@ -4,6 +4,15 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const compression = require("compression");
+
+/* Refuser de démarrer sans JWT_SECRET défini */
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET === "dev-secret-change-me") {
+  console.error("\n❌ FATAL : JWT_SECRET non défini ou identique à la valeur par défaut.\n   Définissez une clé secrète dans backend/.env : JWT_SECRET=votre-cle-aleatoire-ici\n");
+  process.exit(1);
+}
 const os = require("os");
 const http = require("http");
 const { WebSocketServer } = require("ws");
@@ -15,8 +24,24 @@ const app = express();
 /* CORS restreint : localhost + IP LAN de la machine (l'app passe par le proxy same-origin de toute façon) */
 const LAN_IPS = Object.values(os.networkInterfaces()).flat().filter(i => i && i.family === "IPv4" && !i.internal).map(i => i.address);
 const ORIGIN_OK = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
-app.use(cors({ origin: (o, cb) => cb(null, !o || ORIGIN_OK.test(o) || LAN_IPS.some(ip => o.startsWith("http://" + ip + ":") || o.startsWith("https://" + ip + ":"))) }));
-app.use(express.json({ limit: "2mb" }));
+const CLOUD_URL = process.env.RAILWAY_STATIC_URL || process.env.APP_URL || "";
+/* En production, servir les fichiers frontend depuis ../app */
+const path = require("path");
+const fs = require("fs");
+/* Sécurité HTTP */
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+app.use(compression());
+
+/* Rate limiting global : 200 requêtes / minute / IP */
+const globalLimiter = rateLimit({ windowMs: 60 * 1000, max: 200, standardHeaders: true, legacyHeaders: false, message: { error: "Trop de requêtes. Réessayez dans 1 minute." } });
+app.use(globalLimiter);
+
+/* Rate limiting strict sur la connexion : 10 tentatives / minute / IP */
+const authLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false, message: { error: "Trop de tentatives de connexion. Réessayez dans 1 minute." } });
+app.use("/api/auth", authLimiter);
+
+app.use(cors({ origin: (o, cb) => cb(null, !o || ORIGIN_OK.test(o) || LAN_IPS.some(ip => o.startsWith("http://" + ip + ":") || o.startsWith("https://" + ip + ":")) || (CLOUD_URL && o && o.startsWith(CLOUD_URL))) }));
+app.use(express.json({ limit: "1mb" }));
 
 /* Enveloppeur global : toute erreur de route renvoie une réponse JSON propre (jamais de blocage client) */
 const ROUTE_METHODS = ["get", "post", "put", "delete"];
@@ -254,6 +279,20 @@ app.delete("/api/familles/:id", auth, need("R_PRODUITS"), async (req, res) => {
 app.get("/api/produits", auth, async (req, res) => {
   const q = req.query.search ? "%" + req.query.search + "%" : "%";
   const fam = req.query.famille ? Number(req.query.famille) : null;
+  const hasPage = req.query.page !== undefined || req.query.limit !== undefined;
+  const page = Math.max(0, Number(req.query.page) || 0);
+  const limit = Math.min(Math.max(1, Number(req.query.limit) || 500), 2000);
+  if (hasPage) {
+    const countQ = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM produits p
+       WHERE (p.nom ILIKE $1 OR p.code ILIKE $1) AND ($2::bigint IS NULL OR p.famille_id = $2)`, [q, fam]);
+    const total = countQ.rows[0].total;
+    const { rows } = await pool.query(
+      `SELECT p.*, f.nom AS famille, p2.nom AS parent_nom FROM produits p LEFT JOIN familles f ON f.id = p.famille_id LEFT JOIN produits p2 ON p2.id = p.parent_produit_id
+       WHERE (p.nom ILIKE $1 OR p.code ILIKE $1) AND ($2::bigint IS NULL OR p.famille_id = $2)
+       ORDER BY p.nom LIMIT $3 OFFSET $4`, [q, fam, limit, page * limit]);
+    return res.json({ rows, total, page, limit });
+  }
   const { rows } = await pool.query(
     `SELECT p.*, f.nom AS famille, p2.nom AS parent_nom FROM produits p LEFT JOIN familles f ON f.id = p.famille_id LEFT JOIN produits p2 ON p2.id = p.parent_produit_id
      WHERE (p.nom ILIKE $1 OR p.code ILIKE $1) AND ($2::bigint IS NULL OR p.famille_id = $2)
@@ -721,6 +760,25 @@ app.post("/api/annulations/:id/refuser", auth, async (req, res) => {
 /* ---------- CLIENTS & FIDÉLITÉ ---------- */
 app.get("/api/clients", auth, async (req, res) => {
   const q = req.query.q ? "%" + req.query.q + "%" : "%";
+  const hasPage = req.query.page !== undefined || req.query.limit !== undefined;
+  const page = Math.max(0, Number(req.query.page) || 0);
+  const limit = Math.min(Math.max(1, Number(req.query.limit) || 500), 2000);
+  if (hasPage) {
+    const countQ = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM clients c WHERE (c.nom ILIKE $1 OR c.tel ILIKE $1 OR c.adresse ILIKE $1)`, [q]);
+    const total = countQ.rows[0].total;
+    const { rows } = await pool.query(`
+      SELECT c.*,
+        COALESCE((
+          SELECT SUM(v.net - COALESCE((SELECT SUM(rc.montant) FROM reglements_credit rc WHERE rc.vente_id = v.id), 0))
+          FROM ventes v WHERE v.client_id = c.id AND v.mode = 'credit'
+        ), 0) AS solde_credit,
+        (SELECT COUNT(*)::int FROM ventes v WHERE v.client_id = c.id) AS nb_achats
+      FROM clients c WHERE (c.nom ILIKE $1 OR c.tel ILIKE $1 OR c.adresse ILIKE $1)
+      ORDER BY c.nom LIMIT $2 OFFSET $3
+    `, [q, limit, page * limit]);
+    return res.json({ rows, total, page, limit });
+  }
   const { rows } = await pool.query(`
     SELECT c.*,
       COALESCE((
@@ -1681,6 +1739,17 @@ app.get("/api/versements", auth, async (req, res) => {
 /* ---------- démarrage ---------- */
 /* ---------- Module Stock avanc� (magasins, services, bons FEFO, inventaires, r�appro) ---------- */
 require("./module-stock")({ app, auth, need, broadcast });
+
+/* En production : servir le frontend statique depuis ../app */
+const appDir = path.join(__dirname, "..", "..", "app");
+if (fs.existsSync(appDir)) {
+  app.use(express.static(appDir, { index: "index.html" }));
+  app.get("*", (req, res) => {
+    if (!req.path.startsWith("/api") && !req.path.startsWith("/ws")) {
+      res.sendFile(path.join(appDir, "index.html"));
+    }
+  });
+}
 
 process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);

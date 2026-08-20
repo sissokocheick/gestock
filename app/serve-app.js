@@ -8,6 +8,24 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const net = require("net");
+const zlib = require("zlib");
+
+/* Compression gzip pour les fichiers statiques (aucune dépendance externe) */
+const COMPRESS_TYPES = new Set([".html", ".js", ".css", ".json", ".svg", ".webmanifest"]);
+function compressResponse(req, res, filePath, data) {
+  const ext = path.extname(filePath).toLowerCase();
+  const accept = req.headers["accept-encoding"] || "";
+  if (COMPRESS_TYPES.has(ext) && accept.includes("gzip") && data.length > 256) {
+    zlib.gzip(data, (err, compressed) => {
+      if (err) { res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Cache-Control": "no-cache" }); res.end(data); return; }
+      res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Content-Encoding": "gzip", "Cache-Control": "no-cache" });
+      res.end(compressed);
+    });
+  } else {
+    res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Cache-Control": "no-cache" });
+    res.end(data);
+  }
+}
 
 const ROOT = __dirname;
 const HTTP_PORT = Number(process.env.PORT || 8080);
@@ -29,8 +47,7 @@ function handle(req, res) {
   if (!file.startsWith(ROOT)) { res.writeHead(403); res.end("Forbidden"); return; }
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404); res.end("Not found"); return; }
-    res.writeHead(200, { "Content-Type": MIME[path.extname(file).toLowerCase()] || "application/octet-stream", "Cache-Control": "no-cache" });
-    res.end(data);
+    compressResponse(req, res, file, data);
   });
 }
 
