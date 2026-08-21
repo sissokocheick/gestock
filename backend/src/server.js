@@ -1753,6 +1753,14 @@ if (fs.existsSync(appDir)) {
 
 /* ---------- init schéma + auto-seed ---------- */
 async function initSchema() {
+  // 1) Migrations critiques AVANT le schéma complet
+  const criticalMigrations = [
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS derniere_connexion TIMESTAMPTZ",
+  ];
+  for (const m of criticalMigrations) {
+    try { await pool.query(m); console.log("✅ Migration OK:", m); } catch (e) { console.log("⚠️ Migration skip:", m, e.message); }
+  }
+  // 2) Schéma complet
   try {
     const sql = fs.readFileSync(path.join(__dirname, "..", "schema.sql"), "utf8");
     await pool.query(sql);
@@ -1760,14 +1768,6 @@ async function initSchema() {
   } catch (e) {
     if (e.code === "42710" || e.code === "42P07" || e.code === "42P16") console.log("ℹ️  Schéma déjà appliqué");
     else console.error("⚠️ Schéma:", e.message);
-  }
-}
-async function migrateColumns() {
-  const migrations = [
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS derniere_connexion TIMESTAMPTZ",
-  ];
-  for (const sql of migrations) {
-    try { await pool.query(sql); } catch (e) { /* déjà appliqué */ }
   }
 }
 async function autoSeed() {
@@ -1797,6 +1797,6 @@ async function autoSeed() {
 process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);
 });
-initSchema().then(() => migrateColumns()).then(() => autoSeed()).then(() => {
+initSchema().then(() => autoSeed()).then(() => {
   server.listen(PORT, () => console.log("✅ Backend Gestion Stock & Vente sur http://localhost:" + PORT + " (WebSocket: /ws)"));
 });
