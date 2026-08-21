@@ -1762,6 +1762,14 @@ async function initSchema() {
     else console.error("⚠️ Schéma:", e.message);
   }
 }
+async function migrateColumns() {
+  const migrations = [
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS derniere_connexion TIMESTAMPTZ",
+  ];
+  for (const sql of migrations) {
+    try { await pool.query(sql); } catch (e) { /* déjà appliqué */ }
+  }
+}
 async function autoSeed() {
   const { rows: [{ count }] } = await pool.query("SELECT count(*) FROM users");
   if (Number(count) > 0) return; // déjà des utilisateurs
@@ -1789,6 +1797,6 @@ async function autoSeed() {
 process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);
 });
-initSchema().then(() => autoSeed()).then(() => {
+initSchema().then(() => migrateColumns()).then(() => autoSeed()).then(() => {
   server.listen(PORT, () => console.log("✅ Backend Gestion Stock & Vente sur http://localhost:" + PORT + " (WebSocket: /ws)"));
 });
