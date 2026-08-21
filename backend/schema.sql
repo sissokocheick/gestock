@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
   pin_code      TEXT,
   token_version INT NOT NULL DEFAULT 1,
   actif         BOOLEAN DEFAULT true,
+  derniere_connexion TIMESTAMPTZ,
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 
@@ -391,3 +392,8 @@ CREATE INDEX IF NOT EXISTS idx_mouvements_date ON mouvements(date);
 CREATE INDEX IF NOT EXISTS idx_audit_date    ON audit_log(date);
 CREATE INDEX IF NOT EXISTS idx_items_vente   ON vente_items(vente_id);
 CREATE INDEX IF NOT EXISTS idx_points_date   ON points_soir(date);
+
+-- ============================================================
+-- Migrations colonnes manquantes (idempotent)
+-- ============================================================
+ALTER TABLE users ADD COLUMN IF NOT EXISTS derniere_connexion TIMESTAMPTZ;
