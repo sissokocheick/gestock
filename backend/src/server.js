@@ -98,7 +98,7 @@ async function auth(req, res, next) {
   if (!token) return res.status(401).json({ error: "Non connecté" });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    const { rows } = await pool.query("SELECT id, nom, role_code, droits, actif, token_version, derniere_connexion, pin_code FROM users WHERE id = $1", [payload.id]);
+    const { rows } = await pool.query("SELECT id, nom, role_code, droits, actif, token_version, pin_code FROM users WHERE id = $1", [payload.id]);
     if (!rows.length) return res.status(401).json({ error: "Compte inconnu" });
     if (!rows[0].actif) return res.status(403).json({ error: "Ce compte est désactivé" });
     if (payload.token_version && Number(rows[0].token_version) !== Number(payload.token_version)) {
@@ -160,8 +160,7 @@ app.post("/api/auth/login", async (req, res) => {
     return res.status(401).json({ error: "Identifiant ou mot de passe incorrect" });
   }
   if (!u.actif) return res.status(403).json({ error: "Ce compte est désactivé" });
-  await pool.query("UPDATE users SET derniere_connexion = now() WHERE id = $1", [u.id]);
-  u.derniere_connexion = new Date();
+  try { await pool.query("UPDATE users SET derniere_connexion = now() WHERE id = $1", [u.id]); } catch (e) { /* colonne absente */ }
   loginOk(keyIp);
   loginOk(keyUser);
   await auditEvent(u, "Connexion", "Connexion de " + u.nom);
@@ -184,8 +183,7 @@ app.post("/api/auth/pin-login", async (req, res) => {
   if (!u) return res.status(401).json({ error: "Compte introuvable ou inactif" });
   if (!u.pin_code) return res.status(403).json({ error: "Aucun code PIN configuré pour ce compte. Demandez à l'administrateur." });
   if (String(u.pin_code).trim() !== pin) { loginFail(keyPin); return res.status(401).json({ error: "Code PIN incorrect" }); }
-  await pool.query("UPDATE users SET derniere_connexion = now() WHERE id = $1", [u.id]);
-  u.derniere_connexion = new Date();
+  try { await pool.query("UPDATE users SET derniere_connexion = now() WHERE id = $1", [u.id]); } catch (e) { /* colonne absente */ }
   loginOk(keyPin);
   await auditEvent(u, "Connexion PIN", "Déverrouillage par code PIN de " + u.nom);
   res.json({ token: sign(u), user: await safeUser(u) });
@@ -1009,7 +1007,7 @@ app.post("/api/roles", auth, need("R_USERS"), async (req, res) => {
   res.json({ ok: true, code });
 });
 app.get("/api/users", auth, need("R_USERS"), async (req, res) => {
-  const { rows } = await pool.query("SELECT u.id, u.nom, u.role_code, COALESCE(r.droits, u.droits) AS droits, u.pin_code, u.actif, u.created_at, u.derniere_connexion FROM users u LEFT JOIN roles r ON r.code = u.role_code ORDER BY u.nom");
+  const { rows } = await pool.query("SELECT u.id, u.nom, u.role_code, COALESCE(r.droits, u.droits) AS droits, u.pin_code, u.actif, u.created_at FROM users u LEFT JOIN roles r ON r.code = u.role_code ORDER BY u.nom");
   res.json(rows);
 });
 app.post("/api/users", auth, need("R_USERS"), async (req, res) => {
