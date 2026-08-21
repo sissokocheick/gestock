@@ -160,6 +160,10 @@ function auditEvent(u, action, details) {
 /* Droit de valider les flux sensibles (annulations, versements) : par rôle/droits, JAMAIS par simple homonymie de nom */
 const peutValider = u => !!u && (u.role_code === "admin" || hasRight(u, "R_POINT") || hasRight(u, "R_PARAMS"));
 
+/* Normalisation des saisies : noms en MAJUSCULES, téléphones en chiffres uniquement */
+const normNom = s => String(s || "").trim().toUpperCase();
+const normTel = s => { const d = String(s || "").replace(/\D/g, "").trim(); return d || ""; };
+
 /* ---------- anti force-brute (connexion) ---------- */
 const LOGIN_MAX = 5;                        // tentatives échouées autorisées
 const LOGIN_BLOCK_MS = (Number(process.env.LOGIN_BLOCK_MIN) || 10) * 60 * 1000; // durée du blocage (défaut 10 min)
@@ -253,7 +257,7 @@ app.put("/api/boutique", auth, need("R_PARAMS"), async (req, res) => {
   const b = req.body;
   await tx(req.user.id, c => c.query(
     `UPDATE boutique SET nom=$1, logo=$2, tel=$3, email=$4, adresse=$5, horaires=$6, devise=$7, pied=$8, point_regle=$9, updated_at=now() WHERE id=1`,
-    [b.nom || "Boutique", b.logo || null, b.tel || "", b.email || "", b.adresse || "", b.horaires || "", b.devise || "FCFA", b.pied || "", b.point_regle || null]));
+    [normNom(b.nom) || "Boutique", b.logo || null, normTel(b.tel), String(b.email || "").trim().toLowerCase(), b.adresse || "", b.horaires || "", b.devise || "FCFA", b.pied || "", b.point_regle || null]));
   const { rows } = await pool.query("SELECT * FROM boutique WHERE id=1");
   broadcast({ type: "boutique" });
   res.json(rows[0]);
@@ -295,12 +299,12 @@ app.get("/api/familles", auth, async (req, res) => {
   res.json(rows);
 });
 app.post("/api/familles", auth, need("R_PRODUITS"), async (req, res) => {
-  const nom = String(req.body.nom || "").trim();
+  const nom = normNom(req.body.nom);
   if (!nom) return res.status(400).json({ error: "Nom obligatoire" });
   const gereLot = req.body.gere_par_lot === true;
   try {
     const { rows: [codeRow] } = await pool.query("SELECT 'FAM-' || lpad(nextval('familles_id_seq')::text, 4, '0') AS code");
-    const { rows: [f] } = await tx(req.user.id, c => c.query("INSERT INTO familles(nom, gere_par_lot, code) VALUES($1,$2,$3) RETURNING *", [nom, gereLot, codeRow.code]));
+    const { rows: [f] } = await tx(req.user.id, c => c.query("INSERT INTO familles(nom, gere_par_lot, code) VALUES($1,$2,$3) RETURNING *", [normNom(nom), gereLot, codeRow.code]));
     broadcast({ type: "produits" });
     res.json(f);
   } catch (e) {
@@ -309,7 +313,7 @@ app.post("/api/familles", auth, need("R_PRODUITS"), async (req, res) => {
   }
 });
 app.put("/api/familles/:id", auth, need("R_PRODUITS"), async (req, res) => {
-  await tx(req.user.id, c => c.query("UPDATE familles SET nom=$1, gere_par_lot=$2 WHERE id=$3", [String(req.body.nom || "").trim(), req.body.gere_par_lot === true, req.params.id]));
+  await tx(req.user.id, c => c.query("UPDATE familles SET nom=$1, gere_par_lot=$2 WHERE id=$3", [normNom(req.body.nom), req.body.gere_par_lot === true, req.params.id]));
   broadcast({ type: "produits" });
   res.json({ ok: true });
 });
@@ -375,7 +379,7 @@ app.post("/api/produits", auth, need("R_PRODUITS"), async (req, res) => {
     const { rows } = await c.query(
       `INSERT INTO produits(nom, famille_id, code, photo, prix_achat, prix_vente, stock, stock_min, actif, gere_par_lot, reference, unite, emplacement, parent_produit_id, qte_par_parent)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
-      [p.nom.trim(), famId, p.code || null, p.photo || null, Number(p.prix_achat) || 0, Number(p.prix_vente) || 0,
+      [normNom(p.nom), famId, p.code || null, p.photo || null, Number(p.prix_achat) || 0, Number(p.prix_vente) || 0,
        Number(p.stock) || 0, Number(p.stock_min) || 0, p.actif !== false, gereLot, refRow.ref, p.unite || 'pcs', p.emplacement || null, p.parent_produit_id ? Number(p.parent_produit_id) : null, Number(p.qte_par_parent) || 1]);
     const id = rows[0].id;
     if (Number(p.stock) > 0) {
@@ -414,7 +418,7 @@ app.put("/api/produits/:id", auth, need("R_PRODUITS"), async (req, res) => {
     return (await c.query(
       `UPDATE produits SET nom=$1, famille_id=$2, code=$3, photo=$4, prix_achat=$5, prix_vente=$6, stock_min=$7, actif=$8, gere_par_lot=$9, unite=$10, emplacement=$11, parent_produit_id=$12, qte_par_parent=$13
        WHERE id=$14 RETURNING *`,
-      [p.nom, famId, p.code || null, p.photo || null, Number(p.prix_achat) || 0, Number(p.prix_vente) || 0, Number(p.stock_min) || 0, p.actif !== false, p.gere_par_lot === true || famRow.gere_par_lot === true, p.unite || 'pcs', p.emplacement || null, p.parent_produit_id ? Number(p.parent_produit_id) : null, Number(p.qte_par_parent) || 1, req.params.id])).rows[0];
+      [normNom(p.nom), famId, p.code || null, p.photo || null, Number(p.prix_achat) || 0, Number(p.prix_vente) || 0, Number(p.stock_min) || 0, p.actif !== false, p.gere_par_lot === true || famRow.gere_par_lot === true, p.unite || 'pcs', p.emplacement || null, p.parent_produit_id ? Number(p.parent_produit_id) : null, Number(p.qte_par_parent) || 1, req.params.id])).rows[0];
   });
   broadcast({ type: "produits" });
   res.json(r);
@@ -891,7 +895,7 @@ app.post("/api/clients", auth, need("R_CLIENTS", "R_VENTE"), async (req, res) =>
     const { rows } = await c.query(
       `INSERT INTO clients(nom, tel, email, adresse, plafond_credit, notes)
        VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [nom.trim(), tel ? String(tel).trim() : null, email ? String(email).trim() : null,
+      [normNom(nom), normTel(tel), email ? String(email).trim() : null,
        adresse ? String(adresse).trim() : null, Number(plafond_credit) >= 0 ? Number(plafond_credit) : 50000, notes ? String(notes).trim() : null]);
     return rows[0];
   });
@@ -906,7 +910,7 @@ app.put("/api/clients/:id", auth, need("R_CLIENTS", "R_VENTE"), async (req, res)
     const { rows } = await c.query(
       `UPDATE clients SET nom=$1, tel=$2, email=$3, adresse=$4, plafond_credit=$5, notes=$6, actif=$7
        WHERE id=$8 RETURNING *`,
-      [nom.trim(), tel ? String(tel).trim() : null, email ? String(email).trim() : null,
+      [normNom(nom), normTel(tel), email ? String(email).trim() : null,
        adresse ? String(adresse).trim() : null, Number(plafond_credit) >= 0 ? Number(plafond_credit) : 50000,
        notes ? String(notes).trim() : null, actif !== false, req.params.id]);
     if (!rows.length) throw Object.assign(new Error("Client introuvable"), { status: 404 });
@@ -1081,7 +1085,7 @@ app.post("/api/users", auth, need("R_USERS"), async (req, res) => {
   const hash = bcrypt.hashSync(u.mdp, 10);
   await tx(req.user.id, c => c.query(
     "INSERT INTO users(nom, mdp_hash, role_code, droits, actif, pin_code) VALUES($1,$2,$3,$4,$5,$6)",
-    [u.nom.trim(), hash, u.role_code || "caissier", JSON.stringify(u.droits || []), u.actif !== false, u.pin_code ? hashPin(u.pin_code) : null]));
+    [normNom(u.nom), hash, u.role_code || "caissier", JSON.stringify(u.droits || []), u.actif !== false, u.pin_code ? hashPin(u.pin_code) : null]));
   broadcast({ type: "users" });
   res.json({ ok: true });
 });
@@ -1098,8 +1102,8 @@ app.put("/api/users/:id", auth, need("R_USERS"), async (req, res) => {
           ? "UPDATE users SET nom=$1, mdp_hash=$2, role_code=$3, droits=$4, actif=$5, pin_code=$6, token_version = token_version + 1 WHERE id=$7"
           : "UPDATE users SET nom=$1, mdp_hash=$2, role_code=$3, droits=$4, actif=$5, token_version = token_version + 1 WHERE id=$7",
         withPin
-          ? [u.nom.trim(), hash, u.role_code, JSON.stringify(u.droits || []), u.actif !== false, pinVal, req.params.id]
-          : [u.nom.trim(), hash, u.role_code, JSON.stringify(u.droits || []), u.actif !== false, req.params.id]);
+          ? [normNom(u.nom), hash, u.role_code, JSON.stringify(u.droits || []), u.actif !== false, pinVal, req.params.id]
+          : [normNom(u.nom), hash, u.role_code, JSON.stringify(u.droits || []), u.actif !== false, req.params.id]);
     } else {
       const tv = "token_version = CASE WHEN actif <> $4 THEN token_version + 1 ELSE token_version END";
       await c.query(
@@ -1107,8 +1111,8 @@ app.put("/api/users/:id", auth, need("R_USERS"), async (req, res) => {
           ? "UPDATE users SET nom=$1, role_code=$2, droits=$3, actif=$4, pin_code=$5, " + tv + " WHERE id=$6"
           : "UPDATE users SET nom=$1, role_code=$2, droits=$3, actif=$4, " + tv + " WHERE id=$6",
         withPin
-          ? [u.nom.trim(), u.role_code, JSON.stringify(u.droits || []), u.actif !== false, pinVal, req.params.id]
-          : [u.nom.trim(), u.role_code, JSON.stringify(u.droits || []), u.actif !== false, req.params.id]);
+          ? [normNom(u.nom), u.role_code, JSON.stringify(u.droits || []), u.actif !== false, pinVal, req.params.id]
+          : [normNom(u.nom), u.role_code, JSON.stringify(u.droits || []), u.actif !== false, req.params.id]);
     }
   });
   broadcast({ type: "users" });
@@ -1222,7 +1226,7 @@ app.get("/api/modes-paiement", auth, async (req, res) => {
   res.json(rows);
 });
 app.post("/api/modes-paiement", auth, need("R_PARAMS"), async (req, res) => {
-  const nom = String(req.body.nom || "").trim();
+  const nom = normNom(req.body.nom);
   if (!nom) return res.status(400).json({ error: "Nom obligatoire" });
   const code = slugCode(nom);
   const { rows: [ex] } = await pool.query("SELECT id FROM modes_paiement WHERE code=$1", [code]);
@@ -1427,7 +1431,7 @@ app.put("/api/fournisseurs/:id", auth, need("R_STOCK"), async (req, res) => {
   const f = req.body;
   await tx(req.user.id, c => c.query(
     "UPDATE fournisseurs SET nom=$1, tel=$2, email=$3, adresse=$4, notes=$5 WHERE id=$6",
-    [String(f.nom || "").trim(), f.tel || "", f.email || "", f.adresse || "", f.notes || "", req.params.id]));
+    [normNom(f.nom), normTel(f.tel) || "", f.email || "", f.adresse || "", f.notes || "", req.params.id]));
   broadcast({ type: "stock" });
   res.json({ ok: true });
 });

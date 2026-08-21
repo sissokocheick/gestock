@@ -16,6 +16,33 @@ const fmtDate = iso => new Date(iso).toLocaleString("fr-FR", { day: "2-digit", m
 const fmtDateOnly = iso => { if (!iso) return "-"; const s = String(iso).slice(0, 10); const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? m[3] + "/" + m[2] + "/" + m[1] : s; };
 const todayKey = (d) => { const x = d || new Date(); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); };
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+/* ---------- formatage automatique des champs de saisie ----------
+   data-fmt="money" → milliers (12 500)  ·  "phone" → 10 chiffres groupés 2 par 2 (77 12 34 56 7→…)  ·  "name" → MAJUSCULES */
+const groupThousands = d => String(d).replace(/\B(?=(\d{3})+(?!\d))/g, "\u202f");
+function fmtMoneyInput(raw) {
+  const s = String(raw).replace(/[\s\u202f\u00a0]/g, "").replace(/[^\d.,]/g, "");
+  const m = s.match(/^(\d*)([.,]\d{0,2})?/);
+  const int = (m && m[1]) || "";
+  const dec = (m && m[2]) || "";
+  if (int === "" && dec === "") return "";
+  return groupThousands(int === "" ? "0" : String(Number(int))) + dec.replace(".", ",");
+}
+function fmtPhoneInput(raw) {
+  return String(raw).replace(/\D/g, "").slice(0, 10).replace(/(\d{2})(?=\d)/g, "$1 ");
+}
+document.addEventListener("input", e => {
+  const el = e.target;
+  if (!el || !el.dataset || !el.dataset.fmt) return;
+  let v = null;
+  if (el.dataset.fmt === "money") v = fmtMoneyInput(el.value);
+  else if (el.dataset.fmt === "phone") v = fmtPhoneInput(el.value);
+  else if (el.dataset.fmt === "name") v = el.value.toLocaleUpperCase ? el.value.toLocaleUpperCase("fr-FR") : el.value.toUpperCase();
+  if (v !== null && v !== el.value) el.value = v;
+});
+/* Lecture tolérante au formatage : "12\u202f500,5" → 12500.5 */
+const numV = el => { const s = String((el && el.value) || "").replace(/[\s\u202f\u00a0]/g, "").replace(",", "."); return Number(s) || 0; };
+const telV = el => String((el && el.value) || "").replace(/\D/g, "");
 function readImage(file, maxDim) {
   return new Promise((resolve, reject) => {
     const rd = new FileReader();
@@ -495,13 +522,13 @@ function renderCaisseBar() {
     bar.innerHTML = `<div class="panel" style="max-width:480px;margin:6px auto">
       <h3>🟢 Ouvrir votre caisse</h3>
       <p class="muted">Pour encaisser, ouvrez d'abord votre caisse du jour. Une seule caisse ouverte à la fois.</p>
-      <label class="field">Fonds de départ dans le tiroir (F, facultatif) <input id="caisseFonds" type="number" inputmode="decimal" min="0" value="0" placeholder="ex. 25000"></label>
+      <label class="field">Fonds de départ dans le tiroir (F, facultatif) <input id="caisseFonds" type="text" data-fmt="money" inputmode="decimal" min="0" value="0" placeholder="ex. 25000"></label>
       <button class="btn primary block" id="caisseOuvrirBtn">🟢 Ouvrir ma caisse</button>
     </div>`;
     layout.classList.add("hidden");
     $("#caisseOuvrirBtn").addEventListener("click", async () => {
       try {
-        await api("/caisse/ouvrir", { method: "POST", body: JSON.stringify({ fonds_initial: Number($("#caisseFonds").value) || 0 }) });
+        await api("/caisse/ouvrir", { method: "POST", body: JSON.stringify({ fonds_initial: numV($("#caisseFonds")) || 0 }) });
         toast("Caisse ouverte ✅");
         renderers.vente().catch(() => { });
       } catch (e) { toast(e.message); }
@@ -526,14 +553,14 @@ function renderCaisseBar() {
 function versementForm(c) {
   openModal(`<h3>➕ Versement de caisse</h3>
     <p class="muted">Remise d'argent en cours de journée (au gérant, dépôt...) - déduite de votre caisse.</p>
-    <label class="field">Montant (F) <input id="vsMontant" type="number" inputmode="decimal" min="1"></label>
+    <label class="field">Montant (F) <input id="vsMontant" type="text" data-fmt="money" inputmode="decimal" min="1"></label>
     <label class="field">Mode
       <select id="vsMode">${(DB.modes || []).filter(m => m.actif).map(m => `<option value="${esc(m.code)}">${esc(m.nom)}</option>`).join("")}</select>
     </label>
     <label class="field">Motif (facultatif) <input id="vsMotif" placeholder="ex. remise au gérant à 15h"></label>
     <div class="row"><button class="btn success grow" id="vsSave">💰 Enregistrer</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
   $("#vsSave").addEventListener("click", async () => {
-    const m = Number($("#vsMontant").value) || 0;
+    const m = numV($("#vsMontant")) || 0;
     if (m <= 0) { toast("Montant invalide"); return; }
     askConfirm("Confirmation", `Confirmer le versement de <b>${money(m)}</b> (${modeLabel($("#vsMode").value)}) sur la caisse ?`, async () => {
       try {
@@ -557,12 +584,12 @@ function clotureForm(c) {
     <div class="table-wrap"><table><tr><th>Date</th><th class="num">Montant</th><th>Mode</th><th>Motif</th><th>Statut</th></tr>${rows || `<tr><td colspan="5" class="empty">Aucun versement</td></tr>`}</table></div>
     ${Number(c.verse_en_attente) > 0 ? `<p class="error" style="margin-top:8px">⚠️ ${money(c.verse_en_attente)} de versement(s) en attente de validation - cet argent est encore dans le tiroir.</p>` : ""}
     <p class="muted" style="margin-top:8px">Comptez votre tiroir (especes) et saisissez le montant trouve.</p>
-    <label class="field">Argent compte dans le tiroir (F) <input id="ctCompte" type="number" inputmode="decimal" min="0" value="${c.attendu_especes}"></label>
+    <label class="field">Argent compte dans le tiroir (F) <input id="ctCompte" type="text" data-fmt="money" inputmode="decimal" min="0" value="${c.attendu_especes}"></label>
     <label class="field">Notes <input id="ctNotes" placeholder="ex. ecart explique..."></label>
     <p id="ctWarn" class="error hidden"></p>
     <div class="row"><button class="btn danger grow" id="ctSave">Cloturer la caisse</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
   const syncClot = () => {
-    const ecart = (Number(document.getElementById("ctCompte").value) || 0) - c.attendu_especes;
+    const ecart = (numV(document.getElementById("ctCompte")) || 0) - c.attendu_especes;
     const note = document.getElementById("ctNotes").value.trim();
     const w = document.getElementById("ctWarn");
     if (ecart !== 0) {
@@ -576,7 +603,7 @@ function clotureForm(c) {
   document.getElementById("ctSave").addEventListener("click", async () => {
     const btn = document.getElementById("ctSave"); btn.disabled = true;
     try {
-      const r = await api(`/caisse/${c.id}/cloturer`, { method: "POST", body: JSON.stringify({ compte: Number(document.getElementById("ctCompte").value) || 0, notes: document.getElementById("ctNotes").value }) });
+      const r = await api(`/caisse/${c.id}/cloturer`, { method: "POST", body: JSON.stringify({ compte: numV(document.getElementById("ctCompte")) || 0, notes: document.getElementById("ctNotes").value }) });
       cart = []; closeModal();
       openModal(`<h3>Caisse cloturee</h3>
         <div class="ticket-preview"><pre style="font-family:'Courier New',monospace">CLOTURE DE CAISSE
@@ -914,7 +941,7 @@ function renderCart() {
   const esp = modeEspeces(mode);
   $("#recuWrap").classList.toggle("hidden", !esp);
   if (esp) {
-    const recu = Number($("#cartRecu").value) || 0;
+    const recu = numV($("#cartRecu")) || 0;
     const rendu = $("#cartRendu");
     if (net > 0 && recu >= net) {
       const diff = recu - net;
@@ -936,7 +963,7 @@ function renderCart() {
         q.classList.remove("hidden");
         q.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
           const amt = b.dataset.amt;
-          const cur = Number($("#cartRecu").value) || 0;
+          const cur = numV($("#cartRecu")) || 0;
           $("#cartRecu").value = amt === "exact" ? net : cur + Number(amt);
           renderCart();
         }));
@@ -956,7 +983,7 @@ async function encaisser() {
   if (!DB.caisse) { toast("Ouvrez votre caisse d'abord"); return; }
   /* Montants arrondis à l'unité dès le calcul (évite les écarts flottants type 999,6) */
   const total = Math.round(cart.reduce((s, l) => s + l.prix * l.qte, 0));
-  const remise = clampRemise(total, Math.round(Math.max(0, Number($("#cartRemise").value) || 0)));
+  const remise = clampRemise(total, Math.round(Math.max(0, numV($("#cartRemise")) || 0)));
   const net = Math.max(0, total - remise);
   if (net < 0 || (net === 0 && remise === 0)) { toast("Montant invalide"); return; }
   const mode = $("#cartMode").value;
@@ -964,7 +991,7 @@ async function encaisser() {
   if (mode === "credit") {
     recu = 0;
   } else if (modeEspeces(mode)) {
-    recu = net === 0 ? 0 : (Math.round(Number($("#cartRecu").value) || 0));
+    recu = net === 0 ? 0 : (Math.round(numV($("#cartRecu")) || 0));
     if (recu < net) { toast("Montant reçu insuffisant"); return; }
   }
   const nbArt = cart.reduce((s, l) => s + l.qte, 0);
@@ -1532,7 +1559,7 @@ function prodForm(p) {
         <option value="">— Sélectionnez la famille —</option>${famOpts}
       </select>
     </label>
-    <label class="field">Nom <input id="pfNom" value="${esc(p.nom || "")}"></label>
+    <label class="field">Nom <input id="pfNom" data-fmt="name" value="${esc(p.nom || "")}"></label>
     <div class="row">
       <label class="field grow">Code-barres <input id="pfCode" value="${esc(p.code || "")}" placeholder="6181490000011"></label>
     </div>
@@ -1578,26 +1605,26 @@ function prodForm(p) {
       <input type="file" id="pfPhotoLoadInput" accept="image/*" class="hidden">
     </div>
     <div class="row">
-      <label class="field grow">Prix achat unité (F) <input id="pfPA" type="number" inputmode="decimal" min="0" value="${p.prix_achat || ""}"></label>
-      <label class="field grow">Prix vente unité (F) <input id="pfPV" type="number" inputmode="decimal" min="0" value="${p.prix_vente || ""}"></label>
+      <label class="field grow">Prix achat unité (F) <input id="pfPA" type="text" data-fmt="money" inputmode="decimal" min="0" value="${p.prix_achat || ""}"></label>
+      <label class="field grow">Prix vente unité (F) <input id="pfPV" type="text" data-fmt="money" inputmode="decimal" min="0" value="${p.prix_vente || ""}"></label>
     </div>
     <div class="panel" style="margin-top:4px">
       <b style="font-size:13px">🧮 OU calcul automatique : prix d'un carton / paquet</b>
       <div class="row">
-        <label class="field grow">Prix du carton (F) <input id="pfCarton" type="number" inputmode="decimal" min="0" placeholder="ex. 12000"></label>
+        <label class="field grow">Prix du carton (F) <input id="pfCarton" type="text" data-fmt="money" inputmode="decimal" min="0" placeholder="ex. 12000"></label>
         <label class="field grow">Quantité dans le carton <input id="pfCartonQte" type="number" inputmode="decimal" min="1" placeholder="ex. 24"></label>
       </div>
       <p class="muted" id="pfCalc">Le prix à l'unité sera calculé automatiquement (carton ÷ quantité).</p>
     </div>
     <div class="row">
-      <label class="field grow">Stock ${isNew ? "initial" : "actuel"} <input id="pfStock" type="number" inputmode="decimal" min="0" value="${p.stock || 0}" ${isNew ? "" : "disabled"}></label>
-      <label class="field grow">Seuil minimum <input id="pfMin" type="number" inputmode="decimal" min="0" value="${p.stock_min || 0}"></label>
+      <label class="field grow">Stock ${isNew ? "initial" : "actuel"} <input id="pfStock" type="text" data-fmt="money" inputmode="decimal" min="0" value="${p.stock || 0}" ${isNew ? "" : "disabled"}></label>
+      <label class="field grow">Seuil minimum <input id="pfMin" type="text" data-fmt="money" inputmode="decimal" min="0" value="${p.stock_min || 0}"></label>
     </div>
     <label class="field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="pfActif" style="width:auto" ${p.actif ? "checked" : ""}> Produit actif (visible à la vente)</label>
     <label class="field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="pfLot" style="width:auto" ${p.gere_par_lot ? "checked" : ""}> Géré par lot <span class="muted" style="font-weight:400;font-size:12px">(lot et date de péremption obligatoires à la réception)</span></label>
     <div class="row"><button class="btn success grow" id="pfSave">💾 Enregistrer</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
   const calc = () => {
-    const c = Number($("#pfCarton").value) || 0, q = Number($("#pfCartonQte").value) || 0;
+    const c = numV($("#pfCarton")) || 0, q = numV($("#pfCartonQte")) || 0;
     if (c > 0 && q > 0) { const u = Math.round(c / q); $("#pfPA").value = u; $("#pfCalc").textContent = `Prix à l'unité calculé : ${money(u)} (${money(c)} ÷ ${q})`; }
   };
   $("#pfCarton").addEventListener("input", calc); $("#pfCartonQte").addEventListener("input", calc);
@@ -1615,7 +1642,7 @@ function prodForm(p) {
   $("#pfPhotoLoadInput").addEventListener("change", onPhoto);
   $("#pfSave").addEventListener("click", async () => {
     const nom = $("#pfNom").value.trim();
-    const pa = Number($("#pfPA").value) || 0, pv = Number($("#pfPV").value) || 0;
+    const pa = numV($("#pfPA")) || 0, pv = numV($("#pfPV")) || 0;
     if (!nom) { toast("Le nom est obligatoire"); return; }
     const famVal = $("#pfFamille").value;
     if (!famVal || famVal === "__arch__") { toast("Sélectionnez d'abord la famille de l'article"); return; }
@@ -1626,18 +1653,18 @@ function prodForm(p) {
       code: $("#pfCode").value.trim(),
       prix_achat: pa,
       prix_vente: pv,
-      stock_min: Number($("#pfMin").value) || 0,
+      stock_min: numV($("#pfMin")) || 0,
       actif: $("#pfActif").checked,
       photo: prodPhoto,
       gere_par_lot: $("#pfLot").checked,
       unite: $("#pfUnite") ? $("#pfUnite").value : 'pcs',
       emplacement: $("#pfEmplacement") ? $("#pfEmplacement").value.trim() : null,
-      parent_produit_id: $("#pfParent") && $("#pfParent").value ? Number($("#pfParent").value) : null,
-      qte_par_parent: $("#pfQteParent") ? Number($("#pfQteParent").value) || 1 : 1
+      parent_produit_id: $("#pfParent") && $("#pfParent").value ? numV($("#pfParent")) : null,
+      qte_par_parent: $("#pfQteParent") ? numV($("#pfQteParent")) || 1 : 1
     };
     try {
       if (isNew) {
-        body.stock = Number($("#pfStock").value) || 0;
+        body.stock = numV($("#pfStock")) || 0;
         await api("/produits", { method: "POST", body: JSON.stringify(body) });
         toast("Produit enregistré");
       } else {
@@ -1980,7 +2007,7 @@ function lotForm(p) {
     <p class="muted">Le stock augmente de la quantité. À la vente, le lot le plus ancien part en premier (FIFO).</p>
     <div class="row"><button class="btn success grow" id="ltSave">💾 Enregistrer</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
   $("#ltSave").addEventListener("click", async () => {
-    const q = Number($("#ltQte").value) || 0;
+    const q = numV($("#ltQte")) || 0;
     const num = $("#ltNum").value.trim();
     if (q <= 0) { toast("Quantité invalide"); return; }
     if (!num) { toast("Indiquez le numéro de lot"); return; }
@@ -1997,8 +2024,8 @@ function lotForm(p) {
 function fournisseurForm(f) {
   const isNew = !f; f = f || { nom: "", tel: "", email: "", adresse: "", notes: "" };
   openModal(`<h3>${isNew ? "Nouveau fournisseur" : "Modifier : " + esc(f.nom)}</h3>
-    <label class="field">Nom <input id="ffNom" value="${esc(f.nom)}"></label>
-    <div class="row"><label class="field grow">Téléphone <input id="ffTel" value="${esc(f.tel || "")}"></label>
+    <label class="field">Nom <input id="ffNom" data-fmt="name" value="${esc(f.nom)}"></label>
+    <div class="row"><label class="field grow">Téléphone <input id="ffTel" data-fmt="phone" value="${esc(f.tel || "")}"></label>
       <label class="field grow">E-mail <input id="ffEmail" value="${esc(f.email || "")}"></label></div>
     <label class="field">Adresse <input id="ffAdr" value="${esc(f.adresse || "")}"></label>
     <label class="field">Notes <input id="ffNotes" value="${esc(f.notes || "")}"></label>
@@ -2022,7 +2049,7 @@ function commandeForm() {
     <p class="muted">Recherchez les articles à commander et ajoutez-les à la liste. La commande est enregistrée en une seule fois.</p>
     <div class="bf-top">
       <label class="field bf-field">Fournisseur <select id="cmFour"><option value="">- Choisir le fournisseur -</option>${fours.map(f => `<option value="${f.id}">${esc(f.nom)}</option>`).join("")}</select></label>
-      <label class="field bf-field">Coût de livraison (F) <input id="cmLiv" type="number" inputmode="decimal" min="0" value="0"></label>
+      <label class="field bf-field">Coût de livraison (F) <input id="cmLiv" type="text" data-fmt="money" inputmode="decimal" min="0" value="0"></label>
     </div>
     <div class="bf-search"><input id="cmSearch" placeholder="Rechercher un article à commander..." autocomplete="off"></div>
     <div id="cmResults" class="bf-results"></div>
@@ -2040,12 +2067,12 @@ function commandeForm() {
         <button class="bfItem-x" data-lindel="${i}">✕</button>
         <div class="bfItem-fields">
           <label class="field bf-field">Quantité <input type="number" inputmode="decimal" min="1" value="${l.qte}" data-linqte="${i}"></label>
-          <label class="field bf-field">Prix achat (F) <input type="number" inputmode="decimal" min="0" value="${l.pa}" data-linpa="${i}"></label>
+          <label class="field bf-field">Prix achat (F) <input type="text" inputmode="decimal" data-fmt="money" value="${l.pa}" data-linpa="${i}"></label>
         </div>
       </div>`).join("");
     $$("#cmLines [data-lindel]").forEach(b => b.addEventListener("click", () => { lignes.splice(Number(b.dataset.lindel), 1); renderLignes(); }));
     $$("#cmLines [data-linqte]").forEach(inp => inp.addEventListener("change", () => { const i = Number(inp.dataset.linqte); lignes[i].qte = Math.max(1, Number(inp.value) || 1); }));
-    $$("#cmLines [data-linpa]").forEach(inp => inp.addEventListener("change", () => { const i = Number(inp.dataset.linpa); lignes[i].pa = Math.max(0, Number(inp.value) || 0); }));
+    $$("#cmLines [data-linpa]").forEach(inp => inp.addEventListener("change", () => { const i = Number(inp.dataset.linpa); lignes[i].pa = Math.max(0, numV(inp) || 0); }));
   };
   renderLignes();
   const renderResults = () => {
@@ -2069,9 +2096,9 @@ function commandeForm() {
   });
   $("#cmSave").addEventListener("click", async () => {
     if (!lignes.length) { toast("Ajoutez au moins un article"); return; }
-    if (!Number($("#cmFour").value)) { toast("Sélectionnez le fournisseur"); return; }
+    if (!numV($("#cmFour"))) { toast("Sélectionnez le fournisseur"); return; }
     try {
-      await api("/commandes", { method: "POST", body: JSON.stringify({ fournisseur_id: Number($("#cmFour").value), livraison: Number($("#cmLiv").value) || 0, notes: $("#cmNotes").value, items: lignes.map(l => ({ produitId: l.produitId, qte: l.qte, prix_achat: l.pa })) }) });
+      await api("/commandes", { method: "POST", body: JSON.stringify({ fournisseur_id: numV($("#cmFour")), livraison: numV($("#cmLiv")) || 0, notes: $("#cmNotes").value, items: lignes.map(l => ({ produitId: l.produitId, qte: l.qte, prix_achat: l.pa })) }) });
       toast("Commande créée ✅"); closeModal(); renderers.stock().catch(() => { });
     } catch (e) { toast(e.message); }
   });
@@ -2160,7 +2187,7 @@ function famManager(host) {
   const inline = host !== "#modalCard";
   const fams = DB.familles || [];
   const html = `<h3>🏷️ Gérer les familles</h3>
-    <div class="row"><input id="famNew" class="grow" placeholder="Nouvelle famille..."><label class="field" style="display:flex;gap:6px;align-items:center;flex:0 0 auto"><input type="checkbox" id="famNewLot" style="width:auto"> Par lot</label><button class="btn primary" id="famAdd">+ Ajouter</button></div>
+    <div class="row"><input id="famNew" class="grow" data-fmt="name" placeholder="Nouvelle famille..."><label class="field" style="display:flex;gap:6px;align-items:center;flex:0 0 auto"><input type="checkbox" id="famNewLot" style="width:auto"> Par lot</label><button class="btn primary" id="famAdd">+ Ajouter</button></div>
     <div class="table-wrap" style="margin-top:8px"><table><tr><th>Famille</th><th>Géré par lot</th><th>Statut</th><th>Actions</th></tr>
       ${fams.length === 0 ? `<tr><td colspan="4" class="empty">Aucune famille</td></tr>` :
         fams.map(f => `<tr><td>${esc(f.nom)}</td><td><span class="badge ${f.gere_par_lot ? "info" : "off"}">${f.gere_par_lot ? "Oui" : "Non"}</span></td><td>${f.actif !== false ? '<span class="badge ok">Active</span>' : '<span class="badge off">Archivée</span>'}</td><td><div class="actions"><button class="btn small" data-fren="${f.id}">✎</button><button class="btn small" data-frlot="${f.id}" title="Activer/désactiver la gestion par lot">📦</button><button class="btn small ${f.actif !== false ? 'ghost' : 'success'}" data-frmod="${f.id}">${f.actif !== false ? '🚫 Désactiver' : '✅ Réactiver'}</button></div></td></tr>`).join("")}
@@ -2209,7 +2236,7 @@ renderers.familles = async function () {
   const archived = fams.filter(f => f.actif === false);
   /* Construction HTML sans template literals imbriqués pour éviter les erreurs de syntaxe */
   var h = '<div class="row" style="margin-bottom:12px;gap:8px">'
-    + '<input id="famNewInput" class="grow" placeholder="Nom de la nouvelle famille..." style="max-width:300px">'
+    + '<input id="famNewInput" class="grow" data-fmt="name" placeholder="Nom de la nouvelle famille..." style="max-width:300px">'
     + '<label class="field" style="display:flex;gap:6px;align-items:center;margin:0;white-space:nowrap"><input type="checkbox" id="famNewLot" style="width:auto"> 📦 Gérée par lot</label>'
     + '<button class="btn primary" id="famAddBtn">+ Ajouter</button>'
     + '</div>'
@@ -2313,7 +2340,7 @@ function mvForm(p, type, qteDefaut) {
     <div class="row"><button class="btn success grow" id="mvSave">Enregistrer</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
   if (type === "Ajustement") {
     const updApres = () => {
-      const s = $("#mvSens").value, qt = Number($("#mvQte").value) || 0;
+      const s = $("#mvSens").value, qt = numV($("#mvQte")) || 0;
       const ap = Number(p.stock) + (s === "retirer" ? -qt : qt);
       $("#mvApres").textContent = "Stock actuel : " + p.stock + " → après : " + Math.max(ap, 0);
     };
@@ -2321,7 +2348,7 @@ function mvForm(p, type, qteDefaut) {
     $("#mvQte").addEventListener("input", updApres);
   }
   $("#mvSave").addEventListener("click", async () => {
-    const q = Number($("#mvQte").value) || 0, motif = $("#mvMotif").value.trim();
+    const q = numV($("#mvQte")) || 0, motif = $("#mvMotif").value.trim();
     if (q <= 0 || !motif) { toast("Quantité et motif obligatoires"); return; }
     if (type === "Entrée") {
       const fSel = $("#mvFour").value;
@@ -2335,7 +2362,7 @@ function mvForm(p, type, qteDefaut) {
     let typeReq = "entree";
     const enr = async (t, qte) => {
       try {
-        const fourId = $("#mvFour") ? Number($("#mvFour").value) || null : null;
+        const fourId = $("#mvFour") ? numV($("#mvFour")) || null : null;
         const mvBody = { type: t, qte, motif, fournisseur_id: fourId };
         if (t === "entree" || t === "retour") { mvBody.numero_lot = $("#mvLot").value.trim(); mvBody.date_peremption = $("#mvPer").value; }
         await api("/produits/" + p.id + "/stock", { method: "POST", body: JSON.stringify(mvBody) });
@@ -2365,10 +2392,10 @@ function invForm(p) {
     </label>
     <p class="muted" id="invEcart">Écart : 0</p>
     <div class="row"><button class="btn success grow" id="invSave">Valider l'inventaire</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
-  const upd = () => { const q = Number($("#invQte").value) || 0; $("#invEcart").textContent = `Écart : ${q - Number(p.stock) > 0 ? "+" : ""}${q - Number(p.stock)} unité(s)`; };
+  const upd = () => { const q = numV($("#invQte")) || 0; $("#invEcart").textContent = `Écart : ${q - Number(p.stock) > 0 ? "+" : ""}${q - Number(p.stock)} unité(s)`; };
   $("#invQte").addEventListener("input", upd);
   $("#invSave").addEventListener("click", async () => {
-    const q = Number($("#invQte").value) || 0;
+    const q = numV($("#invQte")) || 0;
     const validerInv = async () => {
       try {
         const r = await api("/produits/" + p.id + "/inventaire", { method: "POST", body: JSON.stringify({ qteReelle: q }) });
@@ -2645,7 +2672,7 @@ function userForm(u) {
   u = u || { nom: "", mdp: "", role_code: "caissier", droits: [], actif: true };
   const roles = DB.roles || [];
   openModal(`<h3>${isNew ? "Nouvel utilisateur" : "Modifier : " + esc(u.nom)}</h3>
-    <label class="field">Nom d'utilisateur <input id="ufNom" value="${esc(u.nom || "")}"></label>
+    <label class="field">Nom d'utilisateur <input id="ufNom" data-fmt="name" value="${esc(u.nom || "")}"></label>
     <label class="field">Mot de passe
       <span style="display:flex;gap:6px;margin-top:4px"><input id="ufMdp" type="password" value="" placeholder="${isNew ? "obligatoire" : "laisser vide pour ne pas changer"}">
       <button type="button" class="btn ghost small" id="ufEye" style="min-height:42px;flex:0 0 auto" title="Afficher / masquer le mot de passe">👁️</button></span>
@@ -2802,11 +2829,11 @@ function clientForm(c) {
   openModal(`
     <h3>${isNew ? "➕ Nouveau client" : "✏️ Modifier : " + esc(c.nom)}</h3>
     <label class="field">Nom complet du client *
-      <input id="clfNom" value="${esc(c.nom || "")}" placeholder="ex: Moussa Diallo">
+      <input id="clfNom" data-fmt="name" value="${esc(c.nom || "")}" placeholder="ex: Moussa Diallo">
     </label>
     <div class="row">
       <label class="field grow">Téléphone (WhatsApp)
-        <input id="clfTel" value="${esc(c.tel || "")}" placeholder="ex: 771234567" inputmode="tel">
+        <input id="clfTel" data-fmt="phone" value="${esc(c.tel || "")}" placeholder="ex: 771234567" inputmode="tel">
       </label>
       <label class="field grow">Email
         <input id="clfEmail" value="${esc(c.email || "")}" placeholder="ex: client@email.com" inputmode="email">
@@ -2816,7 +2843,7 @@ function clientForm(c) {
       <input id="clfAdresse" value="${esc(c.adresse || "")}" placeholder="ex: Dakar Plateau, Rue 12">
     </label>
     <label class="field">Plafond maximal de crédit autorisé (F)
-      <input id="clfPlafond" type="number" inputmode="decimal" min="0" value="${c.plafond_credit || 50000}">
+      <input id="clfPlafond" type="text" data-fmt="money" inputmode="decimal" min="0" value="${c.plafond_credit || 50000}">
       <p class="muted" style="margin:2px 0 0;font-size:11px">Le système bloquera automatiquement toute vente à crédit si le cumul dépasse ce montant.</p>
     </label>
     <label class="field">Notes / Remarques
@@ -2837,7 +2864,7 @@ function clientForm(c) {
       tel: $("#clfTel").value.trim(),
       email: $("#clfEmail").value.trim(),
       adresse: $("#clfAdresse").value.trim(),
-      plafond_credit: Number($("#clfPlafond").value) || 0,
+      plafond_credit: numV($("#clfPlafond")) || 0,
       notes: $("#clfNotes").value.trim(),
       actif: $("#clfActif") ? $("#clfActif").checked : true
     };
@@ -3096,14 +3123,14 @@ function renderDepenses() {
   var addBtn = $("#depAdd");
   if (addBtn) addBtn.addEventListener("click", function() {
     openModal('<h3>Nouvelle dépense</h3>'
-      + '<label class="field">Montant (F) <input id="depMontant" type="number" inputmode="decimal" min="1" placeholder="ex. 5000"></label>'
+      + '<label class="field">Montant (F) <input id="depMontant" type="text" data-fmt="money" inputmode="decimal" min="1" placeholder="ex. 5000"></label>'
       + '<label class="field">Catégorie <select id="depCat">' + catsFull.map(function(c) { return '<option>' + c + '</option>'; }).join('') + '</select></label>'
       + '<label class="field">Motif <input id="depMotif" placeholder="ex. Facture électricité juillet"></label>'
       + '<label class="field">Mode de paiement <select id="depMode"><option value="especes">Espèces</option><option value="mobile">Mobile money</option><option value="carte">Carte</option></select></label>'
       + '<label class="field">Date <input id="depDate" type="date" value="' + todayKey() + '"></label>'
       + '<div class="row"><button class="btn success grow" id="depSave">Enregistrer</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>');
     $("#depSave").addEventListener("click", async function() {
-      var montant = Number($("#depMontant").value) || 0;
+      var montant = numV($("#depMontant")) || 0;
       if (montant <= 0) { toast("Montant invalide"); return; }
       try {
         await api("/depenses", { method: "POST", body: JSON.stringify({
@@ -3277,9 +3304,9 @@ renderers.params = async function () {
     <div id="ptPaneId">
       <div class="panel" style="margin-bottom:10px">
         <h3>🏪 Identité de la boutique (apparaît sur les tickets et documents)</h3>
-        <div class="row"><label class="field grow">Nom de la boutique <input id="bpNom" value="${esc(b.nom || "")}"></label>
+        <div class="row"><label class="field grow">Nom de la boutique <input id="bpNom" data-fmt="name" value="${esc(b.nom || "")}"></label>
           <label class="field grow">Devise <input id="bpDevise" value="${esc(b.devise || "FCFA")}"></label></div>
-        <div class="row"><label class="field grow">Téléphone <input id="bpTel" value="${esc(b.tel || "")}"></label>
+        <div class="row"><label class="field grow">Téléphone <input id="bpTel" data-fmt="phone" value="${esc(b.tel || "")}"></label>
           <label class="field grow">E-mail <input id="bpEmail" value="${esc(b.email || "")}"></label></div>
         <div class="row"><label class="field grow">Adresse <input id="bpAdresse" value="${esc(b.adresse || "")}"></label>
           <label class="field grow">Horaires <input id="bpHoraires" value="${esc(b.horaires || "")}"></label></div>
@@ -3289,7 +3316,7 @@ renderers.params = async function () {
         <div id="bpLogoPrev">${b.logo ? `<img src="${b.logo}" class="mini-logo">` : ""}</div>
         <div class="row"><button class="btn primary grow" id="bpSave">💾 Enregistrer</button></div>
         <label class="field">Remise maximale autorisée à la caisse (%) - 0 = aucune remise
-          <input id="bpRemiseMax" type="number" inputmode="decimal" min="0" max="100" value="${getParam("remise_max_pct") ?? 100}">
+          <input id="bpRemiseMax" type="number" data-fmt="money" inputmode="decimal" min="0" max="100" value="${getParam("remise_max_pct") ?? 100}">
           <span class="muted" style="font-size:12px">Partagé sur tous les appareils ; la limite est aussi vérifiée côté serveur.</span></label>
       </div>
     </div>
