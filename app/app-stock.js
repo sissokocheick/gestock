@@ -6,7 +6,8 @@
    ============================================================ */
 window.AppStock = (function () {
   "use strict";
-  const API = location.origin + "/api";
+  /* Même résolution d'API que app.js (gs_api ou same-origin) */
+  const API = (localStorage.getItem("gs_api") || location.origin) + "/api";
   const token = () => localStorage.getItem("gs_token") || null;
   let styleInjected = false;
   let cmdBox = null;
@@ -83,14 +84,13 @@ window.AppStock = (function () {
     if (!box) return;
     box.innerHTML = `<div class="stk-mut">Chargement…</div>`;
     try {
-      const [magasins, produits] = await Promise.all([api("/magasins"), api("/produits")]);
-      const magId = (magasins && magasins[0]) ? magasins[0].id : null;
+      const produits = await api("/produits");
       box.innerHTML = `
           <div class="stk-grid">
             <div><label>Produit</label><select id="stkProd">${produits.filter(p => p.actif !== false).map(p => `<option value="${p.id}">${esc(p.nom)}${p.code ? " (" + esc(p.code) + ")" : ""}</option>`).join("")}</select></div>
             <div><label>Quantité</label><input id="stkQte" type="number" inputmode="decimal" value="1" min="0" step="0.01"></div>
             <div><label>Destinataire / motif</label><input id="stkMotif" placeholder="ex. Don à l'école, usage cuisine…"></div>
-            <div style="align-self:end"><button class="stk-btn" onclick="AppStock.sortieRapide(${magId || "null"})">Enregistrer la sortie</button></div>
+            <div style="align-self:end"><button class="stk-btn" onclick="AppStock.sortieRapide()">Enregistrer la sortie</button></div>
           </div>`;
     } catch (e) {
       box.innerHTML = `<div class="stk-bad" style="padding:8px 10px;border-radius:8px">${esc(e.message)}</div>`;
@@ -115,18 +115,18 @@ window.AppStock = (function () {
     } catch (e) { toast("Erreur : " + e.message); }
   }
 
-  async function sortieRapide(magId) {
+  async function sortieRapide() {
     const produit_id = Number(document.getElementById("stkProd").value);
     const qte = Number(document.getElementById("stkQte").value);
     const motif = (document.getElementById("stkMotif").value || "").trim();
     if (!qte || qte <= 0) return toast("Quantité invalide");
-    if (!magId) return toast("Aucun magasin disponible");
     try {
-      const b = await api("/bons", { method: "POST", body: JSON.stringify({
-        type: "SORTIE", magasin_id: magId, motif: motif || "Sortie interne",
-        items: [{ produit_id, qte }]
+      /* Passe par le flux boutique (/api/mouvements/bon) : met à jour le VRAI stock
+         (produits.stock) + allocation FEFO des lots + journal des mouvements */
+      await api("/mouvements/bon", { method: "POST", body: JSON.stringify({
+        type: "sortie", motif: motif || "Sortie interne",
+        lignes: [{ produitId: produit_id, qte }]
       })});
-      await api("/bons/" + b.id + "/valider", { method: "POST" });
       toast("Sortie enregistrée (" + qte + ")" + (motif ? " — " + motif : ""));
     } catch (e) { toast("Erreur : " + e.message); }
   }

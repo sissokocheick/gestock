@@ -188,9 +188,13 @@ function setConn(ok) {
   const d = document.getElementById("connDot");
   if (d) { d.classList.toggle("off", !ok); d.title = ok ? "Connecté" : "Hors ligne"; }
 }
+let wsReconnectTimer = null;
 function connectWS() {
   if (!token) return;
-  try { ws = new WebSocket(WS_URL); } catch (e) { return; }
+  /* Éviter les sockets cumulés (login / déverrouillage PIN répétés) */
+  if (ws) { try { ws.onclose = null; ws.close(); } catch (e) { } ws = null; }
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  try { ws = new WebSocket(WS_URL + "?token=" + encodeURIComponent(token)); } catch (e) { return; }
   ws.onmessage = e => {
     try {
       const m = JSON.parse(e.data);
@@ -209,7 +213,7 @@ function connectWS() {
     } catch (err) { }
   };
   ws.onopen = () => setConn(true);
-  ws.onclose = () => { ws = null; setConn(false); setTimeout(connectWS, 3000); };
+  ws.onclose = () => { ws = null; setConn(false); wsReconnectTimer = setTimeout(connectWS, 3000); };
 }
 
 /* ---------- connexion ---------- */
@@ -243,7 +247,11 @@ function showLoginErr(msg) { $("#loginErr").textContent = msg; $("#loginErr").cl
 function doLogout() {
   token = null; localStorage.removeItem("gs_token");
   sessionStorage.removeItem("gs_locked");
-  if (ws) { try { ws.close(); } catch (e) { } ws = null; }
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  if (ws) { try { ws.onclose = null; ws.close(); } catch (e) { } ws = null; }
+  /* Purger les données mises en cache (sessionStorage + Cache Storage du SW) */
+  try { Object.keys(sessionStorage).filter(k => k.startsWith("gs_cache_")).forEach(k => sessionStorage.removeItem(k)); } catch (e) { }
+  if (window.caches) { caches.keys().then(ks => ks.forEach(k => caches.delete(k))).catch(() => { }); }
   cur = null; cart = [];
   $("#app").classList.add("hidden"); $("#login").classList.remove("hidden");
 }
@@ -293,7 +301,6 @@ function buildNav() {
 function go(view) {
   curView = view;
   try { localStorage.setItem("gs_curView", view); } catch(e) {}
-  curView = view;
   $$(".view").forEach(v => v.classList.remove("active"));
   const el = $("#view-" + view);
   if (!el) return;
@@ -947,8 +954,9 @@ function renderCart() {
 async function encaisser() {
   if (cart.length === 0) { toast("Panier vide"); return; }
   if (!DB.caisse) { toast("Ouvrez votre caisse d'abord"); return; }
-  const total = cart.reduce((s, l) => s + l.prix * l.qte, 0);
-  const remise = clampRemise(total, Math.max(0, Number($("#cartRemise").value) || 0));
+  /* Montants arrondis à l'unité dès le calcul (évite les écarts flottants type 999,6) */
+  const total = Math.round(cart.reduce((s, l) => s + l.prix * l.qte, 0));
+  const remise = clampRemise(total, Math.round(Math.max(0, Number($("#cartRemise").value) || 0)));
   const net = Math.max(0, total - remise);
   if (net < 0 || (net === 0 && remise === 0)) { toast("Montant invalide"); return; }
   const mode = $("#cartMode").value;
@@ -956,7 +964,7 @@ async function encaisser() {
   if (mode === "credit") {
     recu = 0;
   } else if (modeEspeces(mode)) {
-    recu = net === 0 ? 0 : (Number($("#cartRecu").value) || 0);
+    recu = net === 0 ? 0 : (Math.round(Number($("#cartRecu").value) || 0));
     if (recu < net) { toast("Montant reçu insuffisant"); return; }
   }
   const nbArt = cart.reduce((s, l) => s + l.qte, 0);
@@ -1021,7 +1029,7 @@ ${esc(b.email)} - ${esc(b.horaires)}`;
 
 function promptAnnulerVente(v, onDone) {
   const validateurNom = getParam("annulation_validateur") || "admin";
-  const isAuthorized = cur && (cur.role === "admin" || (cur.nom || "").toLowerCase() === validateurNom.toLowerCase());
+  const isAuthorized = cur && (cur.role === "admin" || hasRight("R_POINT") || hasRight("R_PARAMS"));
 
   const modalHTML = `
     <h3>↩️ Annulation du ticket ${esc(v.numero)}</h3>
@@ -1514,11 +1522,18 @@ renderers.produits = async function () {
 function prodForm(p) {
   const isNew = !p;
   p = p || { famille: "", code: "", prix_achat: 0, prix_vente: 0, stock: 0, stock_min: 0, actif: true };
+  const famillesActives = (DB.familles || []).filter(f => f.actif !== false);
+  const famActuelleConnue = famillesActives.some(f => String(f.id) === String(p.famille_id || "") || (!p.famille_id && f.nom === p.famille));
+  const famOpts = famillesActives.map(f => `<option value="${f.id}" ${String(f.id) === String(p.famille_id || "") || (!p.famille_id && f.nom === p.famille) ? "selected" : ""}>${esc(f.nom)}</option>`).join("")
+    + (!famActuelleConnue && p.famille ? `<option value="__arch__" selected>${esc(p.famille)} (archivée)</option>` : "");
   openModal(`<h3>${isNew ? "Nouveau produit" : "Modifier : " + esc(p.nom)}</h3>
+    <label class="field">Famille <span class="muted">*</span>
+      <select id="pfFamille">
+        <option value="">— Sélectionnez la famille —</option>${famOpts}
+      </select>
+    </label>
     <label class="field">Nom <input id="pfNom" value="${esc(p.nom || "")}"></label>
     <div class="row">
-      <label class="field grow">Famille <input id="pfFamille" list="famList" value="${esc(p.famille || "")}"></label>
-      <datalist id="famList">${(DB.familles || []).map(f => `<option value="${esc(f.nom)}">`).join("")}</datalist>
       <label class="field grow">Code-barres <input id="pfCode" value="${esc(p.code || "")}" placeholder="6181490000011"></label>
     </div>
     <div class="row">
@@ -1602,10 +1617,12 @@ function prodForm(p) {
     const nom = $("#pfNom").value.trim();
     const pa = Number($("#pfPA").value) || 0, pv = Number($("#pfPV").value) || 0;
     if (!nom) { toast("Le nom est obligatoire"); return; }
+    const famVal = $("#pfFamille").value;
+    if (!famVal || famVal === "__arch__") { toast("Sélectionnez d'abord la famille de l'article"); return; }
     if (pv <= 0) { toast("Le prix de vente est obligatoire"); return; }
     const body = {
       nom,
-      famille: $("#pfFamille").value.trim(),
+      famille_id: Number(famVal),
       code: $("#pfCode").value.trim(),
       prix_achat: pa,
       prix_vente: pv,
@@ -1768,7 +1785,7 @@ function renderStPeremptions(box, lots) {
   $$("#stBody [data-rebut]").forEach(b => b.addEventListener("click", async () => {
     const l = lots.find(x => String(x.id) === String(b.dataset.rebut));
     if (!l) return;
-    askConfirm("Rebuter le lot", `Rebuter le lot de <b>${l.produit_nom}</b> (${l.qte_restante}) ? Le stock sera réduit.`, async () => {
+    askConfirm("Rebuter le lot", `Rebuter le lot de <b>${esc(l.produit_nom)}</b> (${l.qte_restante}) ? Le stock sera réduit.`, async () => {
       try { await api(`/lots/${l.id}/rebut`, { method: "POST" }); toast("Lot rebuté ✅"); renderers.stock().catch(() => { }); } catch (e) { toast(e.message); }
     }, { danger: true, okLabel: "Rebuter" });
   }));
@@ -1895,7 +1912,7 @@ function bonForm(type) {
         <label class="bf-i-q">Quantité <input type="number" inputmode="decimal" min="1"${entree ? "" : ` max="${p.stock}"`} value="1" class="bfq"></label>
         ${entree ? `<label class="bf-i-l">N° de lot * <input type="text" class="bflot" placeholder="ex. L2024-001"></label>
         <label class="bf-i-p">Péremption * <input type="date" class="bfper"></label>` : `<label class="bf-i-l">Lot à sortir
-          <select class="bflotsel"><option value="">🔄 Auto (plus ancien)</option>${(DB.lots || []).filter(l => Number(l.produit_id) === Number(p.id) && Number(l.qte_restante) > 0).map(l => `<option value="${l.id}">${esc(l.numero || "Lot #" + l.id)} — ${fmtDateOnly(l.date_peremption)} (${fmt(l.qte_restante)})</option>`).join("")}</select>
+          <select class="bflotsel"><option value="">🔄 Auto (plus ancien)</option>${(DB.lots || []).filter(l => Number(l.produit_id) === Number(p.id) && Number(l.qte_restante) > 0).map(l => `<option value="${l.id}">${esc(l.numero || "Lot #" + l.id)} — ${fmtDateOnly(l.date_peremption)} (${l.qte_restante})</option>`).join("")}</select>
         </label>`}
       </div>`;
     row.querySelector(".bf-del").addEventListener("click", e => { e.stopPropagation(); row.remove(); majCompteur(); });
@@ -2173,7 +2190,7 @@ function famManager(host) {
     if (!f) return;
     if (f.actif !== false) {
       // Désactiver (soft delete)
-      askConfirm("Désactiver la famille", `Désactiver la famille <b>« ${f.nom} »</b> ?<br><span class="muted">La famille sera archivée mais conservée dans l'historique. Les produits existants ne seront pas supprimés.</span>`, async () => {
+      askConfirm("Désactiver la famille", `Désactiver la famille <b>« ${esc(f.nom)} »</b> ?<br><span class="muted">La famille sera archivée mais conservée dans l'historique. Les produits existants ne seront pas supprimés.</span>`, async () => {
         try { await api("/familles/" + f.id, { method: "DELETE" }); toast("Famille désactivée — elle reste dans l'historique"); DB.familles = await api("/familles?all=1"); renderers.produits().catch(() => { }); renderers.vente().catch(() => { }); famManager(host); } catch (e) { toast(e.message); }
       }, { danger: true, okLabel: "🚫 Désactiver" });
     } else {
@@ -2263,7 +2280,7 @@ renderers.familles = async function () {
   box.querySelectorAll("[data-frdis]").forEach(b => b.addEventListener("click", () => {
     const f = active.find(x => String(x.id) === String(b.dataset.frdis));
     if (!f) return;
-    askConfirm("Désactiver la famille", `Désactiver <b>« ${f.nom} »</b> ? Les produits existants ne seront pas supprimés.`, async () => {
+    askConfirm("Désactiver la famille", `Désactiver <b>« ${esc(f.nom)} »</b> ? Les produits existants ne seront pas supprimés.`, async () => {
       try { await api("/familles/" + f.id, { method: "DELETE" }); toast("Famille désactivée"); DB.familles = await api("/familles?all=1"); refresh(); } catch (e) { toast(e.message); }
     }, { danger: true, okLabel: "🚫 Désactiver" });
   }));
@@ -2510,14 +2527,14 @@ renderers.point = async function () {
   $$("#pointBox [data-val]").forEach(b => b.addEventListener("click", async () => {
     const c = caisses.find(x => String(x.id) === String(b.dataset.val));
     if (!c) return;
-    askConfirm("Valider la clôture", `Valider la clôture de <b>${c.user_nom}</b> ?<br>Attendu : <b>${money(c.total_attendu)}</b><br>Compté : <b>${money(c.total_compte)}</b><br>Écart : <b>${Number(c.ecart) > 0 ? "+" : ""}${money(c.ecart)}</b>`, async () => {
+    askConfirm("Valider la clôture", `Valider la clôture de <b>${esc(c.user_nom)}</b> ?<br>Attendu : <b>${money(c.total_attendu)}</b><br>Compté : <b>${money(c.total_compte)}</b><br>Écart : <b>${Number(c.ecart) > 0 ? "+" : ""}${money(c.ecart)}</b>`, async () => {
       try { await api(`/caisse/${c.id}/valider`, { method: "PUT" }); toast("Clôture validée ✅"); renderers.point().catch(() => { }); } catch (e) { toast(e.message); }
     }, { okLabel: "Valider" });
   }));
   $$("#pointBox [data-rejet]").forEach(b => b.addEventListener("click", async () => {
     const c = caisses.find(x => String(x.id) === String(b.dataset.rejet));
     if (!c) return;
-    askConfirm("Rejeter le point", `Rejeter le point de <b>${c.user_nom}</b> ?<br><span class="muted">La caissière pourra aller voir sa caisse du jour (Ma journée) pour vérifier. Ses nouvelles ventes s'y ajouteront.</span>`, async () => {
+    askConfirm("Rejeter le point", `Rejeter le point de <b>${esc(c.user_nom)}</b> ?<br><span class="muted">La caissière pourra aller voir sa caisse du jour (Ma journée) pour vérifier. Ses nouvelles ventes s'y ajouteront.</span>`, async () => {
       try { await api(`/caisse/${c.id}/rouvrir`, { method: "PUT" }); toast("Point rejeté - la caissière peut vérifier dans Ma journée"); renderers.point().catch(() => { }); } catch (e) { toast(e.message); }
     }, { okLabel: "Rejeter le point", danger: true });
   }));
@@ -2640,8 +2657,8 @@ function userForm(u) {
     <div id="ufDroitsBadges" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></div>
     <p class="hint" style="margin-top:8px">Les accès de l'utilisateur suivent son rôle. Pour modifier les droits d'un rôle, utilisez « Gérer les rôles ».</p>
     <label class="field">Code PIN (verrouillage rapide)
-      <input id="ufPin" inputmode="numeric" maxlength="6" value="${esc(u.pin_code || "")}" placeholder="4 chiffres, ex. 1234">
-      <span class="hint" style="margin-top:4px">Facultatif — sert à déverrouiller la caisse d'un appui sur 🔒.</span>
+      <input id="ufPin" inputmode="numeric" maxlength="6" value="" placeholder="${isNew ? "4 chiffres, ex. 1234" : (u.pin_set ? "défini — laisser vide pour conserver" : "non défini")}">
+      <span class="hint" style="margin-top:4px">Facultatif — sert à déverrouiller la caisse d'un appui sur 🔒. ${!isNew && u.pin_set ? 'Cochez <label style="display:inline"><input type="checkbox" id="ufPinDel" style="width:auto"> supprimer le PIN</label>.' : ""}</span>
     </label>
     <label class="field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="ufActif" style="width:auto" ${u.actif ? "checked" : ""}> Compte actif</label>
     <div class="row"><button class="btn success grow" id="ufSave">💾 Enregistrer</button><button class="btn ghost grow" onclick="closeModal()">Annuler</button></div>`);
@@ -2659,7 +2676,12 @@ function userForm(u) {
     if (!nom) { toast("Le nom est obligatoire"); return; }
     if (isNew && !mdp) { toast("Le mot de passe est obligatoire"); return; }
     const roleSel = roles.find(r => r.code === $("#ufRole").value);
-    const body = { nom, role_code: $("#ufRole").value, droits: (roleSel && roleSel.droits) || [], actif: $("#ufActif").checked, pin_code: $("#ufPin").value.trim() || null };
+    const pinVal = $("#ufPin").value.trim();
+    const pinDel = $("#ufPinDel") && $("#ufPinDel").checked;
+    /* PIN : envoyé seulement s'il est saisi (ou explicitement supprimé en édition) */
+    const body = { nom, role_code: $("#ufRole").value, droits: (roleSel && roleSel.droits) || [], actif: $("#ufActif").checked };
+    if (pinVal) body.pin_code = pinVal;
+    else if (pinDel) body.pin_code = null;
     try {
       if (isNew) { body.mdp = mdp; await api("/users", { method: "POST", body: JSON.stringify(body) }); toast("Utilisateur créé"); }
       else { if (mdp) body.mdp = mdp; await api("/users/" + u.id, { method: "PUT", body: JSON.stringify(body) }); toast("Utilisateur modifié"); }
@@ -2862,7 +2884,7 @@ async function clientHistoryModal(cid) {
         <table>
           <tr><th>Date</th><th>Ticket</th><th>Articles</th><th class="num">Net</th><th>Mode</th></tr>
           ${vts.length === 0 ? '<tr><td colspan="5" class="empty">Aucun achat enregistré pour le moment</td></tr>' :
-            vts.map(v => '<tr><td>' + fmtDate(v.date) + '</td><td><b>' + esc(v.numero) + '</b></td><td>' + ((v.items || []).map(i => i.nom + ' (x' + i.qte + ')').join(', ')) + '</td><td class="num"><b>' + money(v.net) + '</b></td><td>' + (modeLabel(v.mode) || v.mode) + '</td></tr>').join('')}
+            vts.map(v => '<tr><td>' + fmtDate(v.date) + '</td><td><b>' + esc(v.numero) + '</b></td><td>' + ((v.items || []).map(i => esc(i.nom) + ' (x' + i.qte + ')').join(', ')) + '</td><td class="num"><b>' + money(v.net) + '</b></td><td>' + esc(modeLabel(v.mode) || v.mode) + '</td></tr>').join('')}
         </table>
       </div>
       <div class="row" style="margin-top:14px">
@@ -3358,7 +3380,7 @@ renderers.params = async function () {
   $$("#modesBox [data-tog]").forEach(b => b.addEventListener("click", async () => {
     const m = modes.find(x => String(x.id) === String(b.dataset.tog));
     if (!m) return;
-    askConfirm(m.actif ? "Désactiver le mode" : "Activer le mode", `${m.actif ? "Désactiver" : "Activer"} le mode <b>« ${m.nom} »</b> ?`, async () => {
+    askConfirm(m.actif ? "Désactiver le mode" : "Activer le mode", `${m.actif ? "Désactiver" : "Activer"} le mode <b>« ${esc(m.nom)} »</b> ?`, async () => {
       try { await api("/modes-paiement/" + m.id, { method: "PUT", body: JSON.stringify({ nom: m.nom, especes: m.especes, actif: !m.actif }) }); toast("Mode mis à jour"); renderers.params().catch(() => { }); } catch (e) { toast(e.message); }
     }, { danger: m.actif, okLabel: m.actif ? "Désactiver" : "Activer" });
   }));
@@ -3851,7 +3873,7 @@ renderers.credits = async function () {
                 <button class="btn primary grow" id="printRecuCreditBtn">🖨️ Imprimer</button>
                 <button class="btn ghost grow" onclick="closeModal()">Fermer</button>
               </div>`);
-            $("#printRecuCreditBtn").addEventListener("click", () => printDoc("Reçu de règlement", `<div class="ticket-preview">${esc(txt)}</div>`));
+            $("#printRecuCreditBtn").addEventListener("click", () => imprimer("Reçu de règlement", `<div class="ticket-preview">${esc(txt)}</div>`));
           }
         } catch (e) { toast(e.message); }
       })();
@@ -4100,18 +4122,11 @@ document.addEventListener("keydown", function(e) {
     const lines = [["Date", "Utilisateur", "Action", "Détails"]].concat(rows.map(a => [a.date, a.user_nom, a.action, a.details || ""]));
     const csv = lines.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(";")).join("\n");
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));
+    const url = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));
+    a.href = url;
     a.download = "journal-audit.csv"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
   });
-  const pinBtn = $("#pinLockBtn");
-  if (pinBtn) pinBtn.addEventListener("click", pinLockModal);
-
-  const newClBtn = $("#newClientBtn");
-  if (newClBtn) newClBtn.addEventListener("click", () => clientForm(null));
-
-  const quickAddCl = $("#cartQuickAddClientBtn");
-  if (quickAddCl) quickAddCl.addEventListener("click", () => clientForm(null));
-
   document.addEventListener("click", e => {
     const btn = e.target && e.target.closest ? e.target.closest("#newClientBtn, #cartQuickAddClientBtn, #pinLockBtn") : null;
     if (!btn) return;
@@ -4148,9 +4163,11 @@ document.addEventListener("keydown", function(e) {
   $("#modal").addEventListener("click", e => { if (e.target === $("#modal")) closeModal(); });
 }
 async function init() {
-  checkNotifVersements();
-  try { DB.params = await api("/parametres"); } catch (e) { }
-  $("#loginHint").innerHTML = `Connecté à : <b>${API_BASE}</b>` + (getParam("show_demo") === "1" ? `<br>Comptes de démonstration : <b>admin</b> / admin123 · <b>Awa Diop</b> / pc123 · <b>Fatou Ndiaye</b> / caisse123` : "");
+  /* Les paramètres et notifications nécessitent une session : plus d'appel avant login (401 → déconnexion fantôme) */
+  if (token) {
+    try { DB.params = await api("/parametres"); } catch (e) { }
+  }
+  $("#loginHint").innerHTML = `Connecté à : <b>${esc(API_BASE)}</b>` + (getParam("show_demo") === "1" ? `<br>Comptes de démonstration : <b>admin</b> / admin123 · <b>Awa Diop</b> / pc123 · <b>Fatou Ndiaye</b> / caisse123` : "");
   bind();
   if (token) {
     // restoreSession valide le token et appelle showApp() si valide
@@ -4227,4 +4244,4 @@ initTheme();
 init();
 
 /* Module Stock avance */
-renderers.stockmod = () => AppStock.render();
+renderers.stockmod = () => go("stock");

@@ -35,14 +35,17 @@ const CERTS_DIR = process.env.CERTS_DIR || path.join(ROOT, "..", "certs");
 const MIME = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json",
-  ".png": "image/png", ".ico": "image/x-icon", ".webmanifest": "application/manifest+json", ".backup": "application/octet-stream"
+  ".png": "image/png", ".ico": "image/x-icon", ".webmanifest": "application/manifest+json"
 };
+/* Extensions jamais servies : sauvegardes, docs de travail, env */
+const DENIED_EXT = new Set([".bak", ".docx", ".doc", ".backup", ".env", ".log", ".md", ".sql"]);
 
 function handle(req, res) {
   const url = new URL(req.url, "http://x");
   if (url.pathname.startsWith("/api/")) return proxyApi(req, res, url);
   let p = decodeURIComponent(url.pathname);
   if (p === "/") p = "/index.html";
+  if (DENIED_EXT.has(path.extname(p).toLowerCase())) { res.writeHead(404); res.end("Not found"); return; }
   const file = path.normalize(path.join(ROOT, p));
   if (!file.startsWith(ROOT)) { res.writeHead(403); res.end("Forbidden"); return; }
   fs.readFile(file, (err, data) => {

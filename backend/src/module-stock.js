@@ -32,6 +32,11 @@ async function executerBon(c, bon, userId) {
   for (const it of items) {
     const pid = it.produit_id;
     const qte = Number(it.qte);
+    /* Le stock catalogue (produits.stock) doit rester synchronisé avec stocks_magasin :
+       sinon la caisse, le catalogue et les alertes divergent du stock réel des bons. */
+    const syncCatalogue = delta => delta >= 0
+      ? c.query("UPDATE produits SET stock = stock + $1 WHERE id = $2", [delta, pid])
+      : c.query("UPDATE produits SET stock = GREATEST(0, stock + $1) WHERE id = $2", [delta, pid]);
     const mvt = (type, lotId) => c.query(
       `INSERT INTO mouvements(type, produit_id, qte, motif, user_id, magasin_id, bon_id, lot_id)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
@@ -44,6 +49,7 @@ async function executerBon(c, bon, userId) {
         `INSERT INTO stocks_magasin(magasin_id, produit_id, qte) VALUES($1,$2,$3)
          ON CONFLICT (magasin_id, produit_id) DO UPDATE SET qte = stocks_magasin.qte + EXCLUDED.qte`,
         [mg, pid, qte]);
+      await syncCatalogue(qte);
       const dp = (it.date_peremption && String(it.date_peremption).trim()) || null;
       if (dp) {
         await c.query(
@@ -70,6 +76,7 @@ async function executerBon(c, bon, userId) {
           [MVT_LABEL[bon.type], pid, -Number(al.qte), bon.motif || null, userId, bon.magasin_id, bon.id, al.lot_id]);
       }
       await c.query("UPDATE stocks_magasin SET qte = qte - $1 WHERE magasin_id=$2 AND produit_id=$3", [qte, bon.magasin_id, pid]);
+      await syncCatalogue(-qte);
     } else if (bon.type === "HORS_STOCK") {
       // Traçage sans impact stock
       await c.query(
@@ -87,6 +94,7 @@ async function executerBon(c, bon, userId) {
         `INSERT INTO stocks_magasin(magasin_id, produit_id, qte) VALUES($1,$2,$3)
          ON CONFLICT (magasin_id, produit_id) DO UPDATE SET qte = stocks_magasin.qte + EXCLUDED.qte`,
         [bon.magasin_id, pid, qte]);
+      await syncCatalogue(qte);
       await mvt();
     }
   }
