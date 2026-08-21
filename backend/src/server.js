@@ -1751,7 +1751,34 @@ if (fs.existsSync(appDir)) {
   });
 }
 
+/* ---------- auto-seed : créer admin + boutique si base vide ---------- */
+async function autoSeed() {
+  const { rows: [{ count }] } = await pool.query("SELECT count(*) FROM users");
+  if (Number(count) > 0) return; // déjà des utilisateurs
+  console.log("🌱 Base vide — création du compte admin par défaut...");
+  await pool.query("BEGIN");
+  try {
+    const ROLES = [
+      ["admin", "Administrateur", JSON.stringify(["R_VENTE","R_PRODUITS","R_STOCK","R_USERS","R_RAPPORTS","R_JOURNAL","R_POINT","R_PARAMS"])],
+      ["caissier", "Caissier / Vendeur", JSON.stringify(["R_VENTE"])],
+      ["stockiste", "Stockiste", JSON.stringify(["R_STOCK"])],
+      ["comptable", "Comptable", JSON.stringify(["R_RAPPORTS","R_JOURNAL"])],
+      ["lecteur", "Lecteur", JSON.stringify(["R_RAPPORTS"])],
+    ];
+    for (const [code, label, droits] of ROLES)
+      await pool.query("INSERT INTO roles(code,label,droits) VALUES($1,$2,$3) ON CONFLICT(code) DO NOTHING", [code, label, droits]);
+    const hash = bcrypt.hashSync("admin123", 10);
+    await pool.query("INSERT INTO users(nom,mdp_hash,role_code,droits) VALUES($1,$2,$3,$4)",
+      ["admin", hash, "admin", ROLES[0][2]]);
+    await pool.query("INSERT INTO boutique(id,nom) VALUES(1,'Ma Boutique') ON CONFLICT(id) DO NOTHING");
+    await pool.query("COMMIT");
+    console.log("✅ Admin créé → login: admin / admin123");
+  } catch (e) { await pool.query("ROLLBACK"); console.error("⚠️ Auto-seed échoué:", e.message); }
+}
+
 process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);
 });
-server.listen(PORT, () => console.log("✅ Backend Gestion Stock & Vente sur http://localhost:" + PORT + " (WebSocket: /ws)"));
+autoSeed().then(() => {
+  server.listen(PORT, () => console.log("✅ Backend Gestion Stock & Vente sur http://localhost:" + PORT + " (WebSocket: /ws)"));
+});
