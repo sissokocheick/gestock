@@ -1753,19 +1753,38 @@ if (fs.existsSync(appDir)) {
 async function initSchema() {
   // 1) Migrations critiques AVANT le schéma complet
   const criticalMigrations = [
+    // Colonnes manquantes sur tables existantes
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS derniere_connexion TIMESTAMPTZ",
+    "ALTER TABLE familles ADD COLUMN IF NOT EXISTS gere_par_lot BOOLEAN DEFAULT false",
+    "ALTER TABLE familles ADD COLUMN IF NOT EXISTS code TEXT",
+    "ALTER TABLE familles ADD COLUMN IF NOT EXISTS actif BOOLEAN DEFAULT true",
+    "ALTER TABLE familles ADD COLUMN IF NOT EXISTS desactive_le TIMESTAMPTZ",
+    "ALTER TABLE familles ADD COLUMN IF NOT EXISTS desactive_par BIGINT",
+    "ALTER TABLE produits ADD COLUMN IF NOT EXISTS gere_par_lot BOOLEAN DEFAULT false",
+    "ALTER TABLE produits ADD COLUMN IF NOT EXISTS reference TEXT",
+    "ALTER TABLE lots ADD COLUMN IF NOT EXISTS numero TEXT",
+    "ALTER TABLE lots ADD COLUMN IF NOT EXISTS magasin_id BIGINT",
+    "ALTER TABLE mouvements ADD COLUMN IF NOT EXISTS magasin_id BIGINT",
+    "ALTER TABLE mouvements ADD COLUMN IF NOT EXISTS bon_id BIGINT",
+    "ALTER TABLE mouvements ADD COLUMN IF NOT EXISTS lot_id BIGINT",
+    "ALTER TABLE mouvements ADD COLUMN IF NOT EXISTS fournisseur_id BIGINT",
   ];
   for (const m of criticalMigrations) {
     try { await pool.query(m); console.log("✅ Migration OK:", m); } catch (e) { console.log("⚠️ Migration skip:", m, e.message); }
   }
   // 2) Schéma complet
-  try {
-    const sql = fs.readFileSync(path.join(__dirname, "..", "schema.sql"), "utf8");
-    await pool.query(sql);
-    console.log("✅ Schéma appliqué");
-  } catch (e) {
-    if (e.code === "42710" || e.code === "42P07" || e.code === "42P16") console.log("ℹ️  Schéma déjà appliqué");
-    else console.error("⚠️ Schéma:", e.message);
+  for (const f of ["schema.sql", "module-stock-v1.sql"]) {
+    try {
+      let sql = fs.readFileSync(path.join(__dirname, "..", f), "utf8");
+      sql = sql.split("\n").filter(l => !l.match(/^GRANT\b|^BEGIN\s*;|^COMMIT\s*;|^ALTER DEFAULT PRIVILEGES/i)).join("\n");
+      const stmts = sql.split(";").map(s => s.trim()).filter(s => s.length > 5);
+      for (const s of stmts) {
+        try { await pool.query(s); } catch (e) { /* déjà appliqué ou GRANT refusé */ }
+      }
+      console.log("✅ " + f + " appliqué");
+    } catch (e) {
+      console.error("⚠️ " + f + ":", e.message);
+    }
   }
 }
 async function autoSeed() {
