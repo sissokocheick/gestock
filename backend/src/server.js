@@ -1751,7 +1751,17 @@ if (fs.existsSync(appDir)) {
   });
 }
 
-/* ---------- auto-seed : créer admin + boutique si base vide ---------- */
+/* ---------- init schéma + auto-seed ---------- */
+async function initSchema() {
+  try {
+    const sql = fs.readFileSync(path.join(__dirname, "..", "schema.sql"), "utf8");
+    await pool.query(sql);
+    console.log("✅ Schéma appliqué");
+  } catch (e) {
+    if (e.code === "42710" || e.code === "42P07" || e.code === "42P16") console.log("ℹ️  Schéma déjà appliqué");
+    else console.error("⚠️ Schéma:", e.message);
+  }
+}
 async function autoSeed() {
   const { rows: [{ count }] } = await pool.query("SELECT count(*) FROM users");
   if (Number(count) > 0) return; // déjà des utilisateurs
@@ -1779,6 +1789,6 @@ async function autoSeed() {
 process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);
 });
-autoSeed().then(() => {
+initSchema().then(() => autoSeed()).then(() => {
   server.listen(PORT, () => console.log("✅ Backend Gestion Stock & Vente sur http://localhost:" + PORT + " (WebSocket: /ws)"));
 });

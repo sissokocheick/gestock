@@ -5,7 +5,7 @@
   "description": "Backend API PostgreSQL pour Gestion Stock & Vente (PWA)",
   "main": "src/server.js",
   "scripts": {
-    "start": "node scripts/init-db.js && node src/server.js",
+    "start": "node src/server.js",
     "start:dev": "node src/server.js",
     "db:init": "node scripts/init-db.js",
     "db:seed": "node scripts/seed.js"
