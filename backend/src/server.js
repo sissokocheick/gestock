@@ -737,8 +737,11 @@ app.post("/api/ventes/:id/annuler", auth, async (req, res) => {
     const mgrMdp = String(req.body.manager_mdp || "");
     if (!mgrMdp) return res.status(403).json({ error: "Mot de passe du validateur (« " + validateurNom + " ») obligatoire" });
     const { rows: [mgr] } = await pool.query("SELECT * FROM users WHERE lower(nom)=lower($1) AND actif=true", [mgrNom]);
-    if (!mgr || !bcrypt.compareSync(mgrMdp, mgr.mdp_hash) || !peutValider(mgr)) {
-      return res.status(403).json({ error: "Mot de passe incorrect ou utilisateur non autorisé (validateur requis : " + validateurNom + ")" });
+    if (!mgr || !bcrypt.compareSync(mgrMdp, mgr.mdp_hash)) {
+      return res.status(403).json({ error: "Mot de passe incorrect pour « " + mgrNom + " »" });
+    }
+    if (!peutValider(mgr)) {
+      return res.status(403).json({ error: "« " + mgr.nom + " » est reconnu mais son rôle n'a pas le droit de valider une annulation. Donnez-lui le droit R_POINT (Paramètres → Personnel → Rôles) ou utilisez un compte admin." });
     }
     managerUser = mgr;
   }
