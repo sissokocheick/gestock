@@ -1965,6 +1965,28 @@ async function initSchema() {
     "CREATE INDEX IF NOT EXISTS idx_lots_prod_num ON lots(produit_id, numero)",
     "ALTER TABLE commande_items ADD COLUMN IF NOT EXISTS qte_recue NUMERIC(12,2) DEFAULT 0",
     "ALTER TABLE ventes ADD COLUMN IF NOT EXISTS points_utilises INT DEFAULT 0",
+    /* caisses virtuelles (Ma journée, clôture) */
+    "ALTER TABLE caisses ADD COLUMN IF NOT EXISTS statut TEXT NOT NULL DEFAULT 'ouverte'",
+    "ALTER TABLE caisses ADD COLUMN IF NOT EXISTS ouverte_le TIMESTAMPTZ DEFAULT now()",
+    "ALTER TABLE caisses ADD COLUMN IF NOT EXISTS fermee_le TIMESTAMPTZ",
+    "ALTER TABLE caisses ADD COLUMN IF NOT EXISTS total_attendu NUMERIC(12,2)",
+    "ALTER TABLE caisses ADD COLUMN IF NOT EXISTS total_compte NUMERIC(12,2)",
+    "ALTER TABLE caisses ADD COLUMN IF NOT EXISTS ecart NUMERIC(12,2)",
+    "ALTER TABLE caisses ADD COLUMN IF NOT EXISTS notes TEXT",
+    "ALTER TABLE caisses ADD COLUMN IF NOT EXISTS validee_le TIMESTAMPTZ",
+    "ALTER TABLE caisses ADD COLUMN IF NOT EXISTS validee_par BIGINT",
+    "ALTER TABLE caisses ADD COLUMN IF NOT EXISTS fonds_initial NUMERIC(12,2) DEFAULT 0",
+    /* versements de caisse (Validations) */
+    "ALTER TABLE versements_caisse ADD COLUMN IF NOT EXISTS statut TEXT NOT NULL DEFAULT 'en_attente'",
+    "ALTER TABLE versements_caisse ADD COLUMN IF NOT EXISTS valide_par BIGINT",
+    "ALTER TABLE versements_caisse ADD COLUMN IF NOT EXISTS valide_le TIMESTAMPTZ",
+    "ALTER TABLE versements_caisse ADD COLUMN IF NOT EXISTS motif_refus TEXT",
+    "ALTER TABLE versements_caisse ADD COLUMN IF NOT EXISTS motif TEXT",
+    /* dépenses */
+    "ALTER TABLE depenses ADD COLUMN IF NOT EXISTS annule BOOLEAN DEFAULT false",
+    "ALTER TABLE depenses ADD COLUMN IF NOT EXISTS annule_le TIMESTAMPTZ",
+    "ALTER TABLE depenses ADD COLUMN IF NOT EXISTS annule_par TEXT",
+    "ALTER TABLE depenses ADD COLUMN IF NOT EXISTS annule_motif TEXT",
   ];
   for (const m of criticalMigrations) {
     try { await pool.query(m); console.log("✅ Migration OK:", m); } catch (e) { console.log("⚠️ Migration skip:", m, e.message); }
@@ -2007,7 +2029,12 @@ async function initSchema() {
         } catch (e) { console.log("⚠️ " + t + "." + c + " non ajoutée : " + e.message); }
       }
     }
-    if (ajoutes) console.log("✅ " + ajoutes + " colonne(s) synchronisée(s) avec schema.sql");
+    const absentes = tables.filter(t => !tablesPresentes.has(t));
+    if (absentes.length) {
+      console.log("Ⓜ️ Tables absentes (création via schema.sql) : " + absentes.join(", "));
+      await pool.query("DELETE FROM schema_migrations WHERE fichier IN ('schema.sql','module-stock-v1.sql')").catch(() => { });
+    }
+    console.log("🔎 Sync schéma : " + tables.length + " tables vérifiées, " + ajoutes + " colonne(s) ajoutée(s), " + absentes.length + " table(s) absente(s)");
   } catch (e) { console.log("⚠️ Sync colonnes :", e.message); }
 
   // 2) Schéma complet — versionné dans schema_migrations (plus de re-jeu à chaque boot)
