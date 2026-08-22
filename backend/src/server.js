@@ -615,7 +615,7 @@ app.post("/api/ventes", auth, need("R_VENTE"), async (req, res) => {
     }
     /* Utilisation des points fidélité (1 point = valeur_point F, paramétrable) */
     let pointsUtilises = 0, pointsValeur = 0;
-    const pts = Math.max(0, Math.floor(Number(req.body.points_utilises) || 0));
+    const pts = DBCAPS.points_utilises ? Math.max(0, Math.floor(Number(req.body.points_utilises) || 0)) : 0;
     if (pts > 0 && clientId) {
       const { rows: [pcl] } = await c.query("SELECT points FROM clients WHERE id=$1 FOR UPDATE", [clientId]);
       const { rows: [vp] } = await c.query("SELECT valeur FROM parametres WHERE cle='valeur_point'");
@@ -629,9 +629,12 @@ app.post("/api/ventes", auth, need("R_VENTE"), async (req, res) => {
     }
     const netFinal = net - pointsValeur;
     const pointsGagnes = clientId && netFinal > 0 ? Math.floor(netFinal / 1000) : 0;
-    const { rows: [v] } = await c.query(
-      "INSERT INTO ventes(numero, user_id, caisse_id, remise, total, net, mode, recu, rendu, client_id, client_nom, points_gagnes, points_utilises) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *",
-      [numero, req.user.id, caisse.id, rem, total, netFinal, mode, recuStored, rendu, clientId, finalClientNom, pointsGagnes, pointsUtilises]);
+    const insertVente = DBCAPS.points_utilises
+      ? ["INSERT INTO ventes(numero, user_id, caisse_id, remise, total, net, mode, recu, rendu, client_id, client_nom, points_gagnes, points_utilises) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *",
+         [numero, req.user.id, caisse.id, rem, total, netFinal, mode, recuStored, rendu, clientId, finalClientNom, pointsGagnes, pointsUtilises]]
+      : ["INSERT INTO ventes(numero, user_id, caisse_id, remise, total, net, mode, recu, rendu, client_id, client_nom, points_gagnes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *",
+         [numero, req.user.id, caisse.id, rem, total, netFinal, mode, recuStored, rendu, clientId, finalClientNom, pointsGagnes]];
+    const { rows: [v] } = await c.query(insertVente[0], insertVente[1]);
     if (clientId && pointsGagnes > 0) {
       await c.query("UPDATE clients SET points = points + $1 WHERE id = $2", [pointsGagnes, clientId]);
     }
@@ -1570,11 +1573,15 @@ app.post("/api/commandes/:id/receptionner", auth, need("R_STOCK"), async (req, r
       }
       await c.query("INSERT INTO mouvements(type, produit_id, qte, motif, user_id, ref, lot_id, fournisseur_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
         ["Entrée (réception fournisseur)", pid, q, "Réception commande #" + cmd.id + (cmd.fournisseur_nom ? " - " + cmd.fournisseur_nom : ""), req.user.id, "CMD" + cmd.id, lotId, cmd.fournisseur_id || null]);
-      await c.query("UPDATE commande_items SET qte_recue = COALESCE(qte_recue,0) + $1 WHERE commande_id=$2 AND produit_id=$3", [q, cmd.id, pid]);
+      if (DBCAPS.qte_recue)
+        await c.query("UPDATE commande_items SET qte_recue = COALESCE(qte_recue,0) + $1 WHERE commande_id=$2 AND produit_id=$3", [q, cmd.id, pid]);
     }
-    const { rows: [reste] } = await c.query(
-      "SELECT COUNT(*)::int AS n FROM commande_items WHERE commande_id=$1 AND COALESCE(qte_recue,0) < qte", [cmd.id]);
-    const statut = reste.n === 0 ? "recue" : "partielle";
+    let statut = "recue";
+    if (DBCAPS.qte_recue) {
+      const { rows: [reste] } = await c.query(
+        "SELECT COUNT(*)::int AS n FROM commande_items WHERE commande_id=$1 AND COALESCE(qte_recue,0) < qte", [cmd.id]);
+      statut = reste.n === 0 ? "recue" : "partielle";
+    }
     await c.query("UPDATE commandes SET statut=$1 WHERE id=$2", [statut, cmd.id]);
     return { id: cmd.id, statut };
   });
@@ -2026,6 +2033,18 @@ function shutdown(sig) {
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
-initSchema().then(() => autoSeed()).then(() => {
+/* Capacités réelles de la base : si l'utilisateur applicatif n'est pas
+   propriétaire des tables, les nouvelles colonnes peuvent manquer —
+   on dégrade proprement (fidélité/réceptions partielles désactivées) */
+const DBCAPS = { points_utilises: false, qte_recue: false };
+async function detectCaps() {
+  try {
+    const { rows } = await pool.query("SELECT table_name, column_name FROM information_schema.columns WHERE (table_name='ventes' AND column_name='points_utilises') OR (table_name='commande_items' AND column_name='qte_recue')");
+    rows.forEach(r => { DBCAPS[r.column_name] = true; });
+    if (!DBCAPS.points_utilises) console.log("⚠️ ventes.points_utilises absent — utilisation des points fidélité désactivée (exécutez scripts/prod-fixes.sql en tant que postgres)");
+    if (!DBCAPS.qte_recue) console.log("⚠️ commande_items.qte_recue absent — réceptions partielles désactivées (exécutez scripts/prod-fixes.sql en tant que postgres)");
+  } catch (e) { }
+}
+initSchema().then(() => detectCaps()).then(() => autoSeed()).then(() => {
   server.listen(PORT, () => console.log("✅ Backend Gestion Stock & Vente sur http://localhost:" + PORT + " (WebSocket: /ws)"));
 });
