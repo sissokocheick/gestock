@@ -1969,6 +1969,47 @@ async function initSchema() {
   for (const m of criticalMigrations) {
     try { await pool.query(m); console.log("✅ Migration OK:", m); } catch (e) { console.log("⚠️ Migration skip:", m, e.message); }
   }
+  // 1bis) Auto-synchronisation des colonnes : toute colonne définie dans schema.sql
+  // mais absente de la base (install créée avec un ancien schéma — ex. Render)
+  // est ajoutée automatiquement. CREATE TABLE IF NOT EXISTS ne touche pas une
+  // table existante, c'est ce qui causait « column statut does not exist ».
+  try {
+    const sqlTxt = fs.readFileSync(path.join(__dirname, "..", "schema.sql"), "utf8");
+    const defs = {};
+    const re = /CREATE TABLE IF NOT EXISTS (\w+)\s*\(([\s\S]*?)\n\);/g;
+    let mm;
+    while ((mm = re.exec(sqlTxt))) {
+      const t = mm[1];
+      defs[t] = [];
+      for (let raw of mm[2].split("\n")) {
+        const line = raw.trim().replace(/--.*$/, "").replace(/,$/, "");
+        if (!line) continue;
+        const first = line.split(/\s+/)[0].toUpperCase();
+        if (["PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT", "REFERENCES"].includes(first)) continue;
+        const cm = line.match(/^([a-z_][a-z0-9_]*)\s+(.+)$/);
+        if (cm) defs[t].push([cm[1], cm[2]]);
+      }
+    }
+    const tables = Object.keys(defs);
+    const { rows: cols } = await pool.query(
+      "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema='public' AND table_name = ANY($1)", [tables]);
+    const have = new Set(cols.map(r => r.table_name + "." + r.column_name));
+    const tablesPresentes = new Set(cols.map(r => r.table_name));
+    let ajoutes = 0;
+    for (const t of tables) {
+      if (!tablesPresentes.has(t)) continue; /* table absente : schema.sql la créera */
+      for (const [c, d] of defs[t]) {
+        if (have.has(t + "." + c)) continue;
+        try {
+          await pool.query("ALTER TABLE " + t + " ADD COLUMN IF NOT EXISTS " + c + " " + d);
+          ajoutes++;
+          console.log("➕ Colonne ajoutée : " + t + "." + c);
+        } catch (e) { console.log("⚠️ " + t + "." + c + " non ajoutée : " + e.message); }
+      }
+    }
+    if (ajoutes) console.log("✅ " + ajoutes + " colonne(s) synchronisée(s) avec schema.sql");
+  } catch (e) { console.log("⚠️ Sync colonnes :", e.message); }
+
   // 2) Schéma complet — versionné dans schema_migrations (plus de re-jeu à chaque boot)
   await pool.query("CREATE TABLE IF NOT EXISTS schema_migrations(fichier TEXT PRIMARY KEY, applique_le TIMESTAMPTZ DEFAULT now())").catch(() => { });
   for (const f of ["schema.sql", "module-stock-v1.sql"]) {

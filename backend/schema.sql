@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS ventes (
   mode          TEXT NOT NULL,
   recu          NUMERIC(12,2),
   rendu         NUMERIC(12,2),
-  points_gagnes INT DEFAULT 0
+  points_gagnes INT DEFAULT 0,
+  points_utilises INT DEFAULT 0
 );
 
 -- Lignes de vente (avec copie du nom et des prix = historique figé)
@@ -286,7 +287,8 @@ CREATE TABLE IF NOT EXISTS commande_items (
   produit_id  BIGINT REFERENCES produits(id) ON DELETE SET NULL,
   nom         TEXT NOT NULL,
   qte         NUMERIC(12,2) NOT NULL,
-  prix_achat  NUMERIC(12,2) NOT NULL DEFAULT 0
+  prix_achat  NUMERIC(12,2) NOT NULL DEFAULT 0,
+  qte_recue NUMERIC(12,2) DEFAULT 0
 );
 
 -- Dépenses (loyer, électricité, transport, etc.)
