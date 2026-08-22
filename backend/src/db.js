@@ -1,7 +1,11 @@
 require("dotenv").config();
 const { Pool } = require("pg");
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: Number(process.env.PG_POOL_MAX) || 10,
+  ssl: process.env.PGSSL === '1' ? { rejectUnauthorized: false } : undefined
+});
 
 // Exécute une transaction avec l'utilisateur courant renseigné pour le journal d'audit
 async function tx(userId, fn) {

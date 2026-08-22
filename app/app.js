@@ -43,6 +43,20 @@ document.addEventListener("input", e => {
 /* Lecture tolérante au formatage : "12\u202f500,5" → 12500.5 */
 const numV = el => { const s = String((el && el.value) || "").replace(/[\s\u202f\u00a0]/g, "").replace(",", "."); return Number(s) || 0; };
 const telV = el => String((el && el.value) || "").replace(/\D/g, "");
+
+/* Anti-rebond générique pour les recherches (300 ms) */
+const debounce = (fn, ms) => { let t = null; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms || 300); }; };
+/* Chargement à la demande des librairies lourdes (scanner 368 Ko, barcode 60 Ko) */
+const _loadedScripts = {};
+function ensureScript(src) {
+  if (!_loadedScripts[src]) _loadedScripts[src] = new Promise((ok, ko) => {
+    if (document.querySelector('script[data-src="' + src + '"]')) return ok();
+    const el = document.createElement("script");
+    el.src = src; el.dataset.src = src; el.onload = ok; el.onerror = () => { _loadedScripts[src] = null; ko(new Error("Chargement impossible : " + src)); };
+    document.head.appendChild(el);
+  });
+  return _loadedScripts[src];
+}
 function readImage(file, maxDim) {
   return new Promise((resolve, reject) => {
     const rd = new FileReader();
@@ -88,7 +102,7 @@ async function restoreSession() {
 }
 let cur = null;
 let DB = { boutique: { devise: "F" }, produits: [], familles: [], roles: [], recap: [], modes: [], caisses: [], droits: [], params: [], typesMv: [], lots: [], fournisseurs: [], commandes: [], clients: [] };
-let cart = [], camStream = null, scanTimer = null, curView = "accueil", ws = null, usbPrinter = null;
+let cart = [], camStream = null, scanTimer = null, curView = "accueil", ws = null, usbPrinter = null, cartUsePoints = false;
 
 const QUEUE_KEY = "gs_queue";
 function queueLoad() { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]"); } catch (e) { return []; } }
@@ -215,7 +229,7 @@ function setConn(ok) {
   const d = document.getElementById("connDot");
   if (d) { d.classList.toggle("off", !ok); d.title = ok ? "Connecté" : "Hors ligne"; }
 }
-let wsReconnectTimer = null;
+let wsReconnectTimer = null, wsRenderTimer = null;
 function connectWS() {
   if (!token) return;
   /* Éviter les sockets cumulés (login / déverrouillage PIN répétés) */
@@ -228,14 +242,26 @@ function connectWS() {
       if (m && m.type) {
         if (m.type === "versement_demande" || m.type === "versement_valide" || m.type === "versement_refuse" || m.type === "caisse" || m.type === "demande_annulation") {
           checkNotifValidations();
-          if (m.type === "demande_annulation") {
-            const validateurNom = getParam("annulation_validateur") || "admin";
-            if (cur && (cur.role === "admin" || (cur.nom || "").toLowerCase() === validateurNom.toLowerCase())) {
-              toast("🔔 Nouvelle demande d'annulation de vente reçue !");
-            }
+          if (m.type === "demande_annulation" && cur && (cur.role === "admin" || hasRight("R_POINT") || hasRight("R_PARAMS"))) {
+            toast("🔔 Nouvelle demande d'annulation de vente reçue !");
           }
         }
-        if (renderers[curView]) renderers[curView]().catch(() => { });
+        /* Invalidation ciblée + débounce : la vue courante n'est re-rendue que
+           si l'événement la concerne, au maximum toutes les 2 secondes */
+        const CONCERNE = {
+          vente: ["vente", "stock", "caisse", "releve", "rapports"], stock: ["stock", "produits", "vente", "accueil"],
+          produits: ["produits", "stock", "vente", "accueil"], clients: ["clients", "vente"],
+          caisse: ["caisse", "point", "vente", "releve", "versements"], roles: ["params", "users"],
+          users: ["users", "params"], depenses: ["depenses", "rapports"], point: ["point"],
+          demande_annulation: ["versements"], versement_demande: ["versements"],
+          versement_valide: ["versements", "point"], versement_refuse: ["versements", "point"],
+          params: ["params"], modes: ["vente", "params"], boutique: ["vente", "params"]
+        };
+        const vues = CONCERNE[m.type];
+        if (vues && vues.includes(curView)) {
+          clearTimeout(wsRenderTimer);
+          wsRenderTimer = setTimeout(() => { if (renderers[curView]) renderers[curView]().catch(() => { }); }, 2000);
+        }
       }
     } catch (err) { }
   };
@@ -696,7 +722,7 @@ function renderVenteGrid() {
     ? `<div class="empty">Aucun produit trouvé</div>`
     : list.map(p => `
       <div class="prod-card ${Number(p.stock) <= 0 ? "off" : ""}" data-pid="${p.id}">
-        ${p.photo ? `<img src="${p.photo}" style="width:100%;height:64px;object-fit:cover;border-radius:8px;margin-bottom:6px">` : ""}
+        ${p.has_photo ? `<img src="/api/produits/${p.id}/photo" loading="lazy" style="width:100%;height:64px;object-fit:cover;border-radius:8px;margin-bottom:6px">` : ""}
         <div class="pn">${esc(p.nom)}</div>
         <div class="pp">${money(p.prix_vente)}</div>
         <div class="ps"><span class="stock-badge ${Number(p.stock) <= 0 ? "out" : Number(p.stock) <= Number(p.stock_min) ? "low" : "ok"}"><span class="dot"></span>Stock : ${p.stock}${p.stock_min ? " · min " + p.stock_min : ""}</span></div>
@@ -887,8 +913,13 @@ function updateCartClientInfo() {
   }
   info.classList.remove("hidden");
   const solde = Number(cl.solde_credit || 0);
-  info.innerHTML = `⭐ Points : <b>${cl.points || 0} pts</b> · Plafond : <b>${money(cl.plafond_credit)}</b>` +
-    (solde > 0 ? ` · <span style="color:var(--danger)">Dette : ${money(solde)}</span>` : "");
+  const valPt = Math.max(0, Number(getParam("valeur_point")) || 25);
+  const pts = Number(cl.points || 0);
+  info.innerHTML = `⭐ Points : <b>${pts} pts</b>${valPt > 0 ? ` (=${money(pts * valPt)})` : ""} · Plafond : <b>${money(cl.plafond_credit)}</b>` +
+    (solde > 0 ? ` · <span style="color:var(--danger)">Dette : ${money(solde)}</span>` : "") +
+    (valPt > 0 && pts > 0 ? ` <button type="button" class="btn small ${cartUsePoints ? "success" : "ghost"}" id="cartPtsBtn">🎯 ${cartUsePoints ? "Points activés ✓" : "Utiliser mes points"}</button>` : "");
+  const pb = $("#cartPtsBtn");
+  if (pb) pb.addEventListener("click", () => { cartUsePoints = !cartUsePoints; updateCartClientInfo(); });
 }
 
 function renderCart() {
@@ -995,18 +1026,26 @@ async function encaisser() {
     if (recu < net) { toast("Montant reçu insuffisant"); return; }
   }
   const nbArt = cart.reduce((s, l) => s + l.qte, 0);
+  /* Points fidélité : utilisation seulement si client sélectionné et activé */
+  const cidPts = $("#cartClientSel") ? $("#cartClientSel").value : null;
+  const clPts = cidPts ? (DB.clients || []).find(c => String(c.id) === String(cidPts)) : null;
+  const valPt = Math.max(0, Number(getParam("valeur_point")) || 25);
+  let pointsUtilises = 0;
+  if (cartUsePoints && clPts && valPt > 0 && net > 0) {
+    pointsUtilises = Math.min(Number(clPts.points || 0), Math.floor(net / valPt));
+  }
   const doVente = async clientNom => {
     const btn = $("#encaisserBtn"); btn.disabled = true; btn.textContent = "Encaissement...";
     const clientId = $("#cartClientSel") ? $("#cartClientSel").value || null : null;
     try {
       const v = await api("/ventes", {
         method: "POST",
-        body: JSON.stringify({ items: cart.map(l => ({ produitId: l.produitId, qte: l.qte })), remise, mode, recu, client_id: clientId, client_nom: clientNom, ref: "T" + uid().toUpperCase() })
+        body: JSON.stringify({ items: cart.map(l => ({ produitId: l.produitId, qte: l.qte })), remise, mode, recu, client_id: clientId, client_nom: clientNom, points_utilises: pointsUtilises, ref: "T" + uid().toUpperCase() })
       });
       pushRecents(cart.map(l => l.produitId));
       cart = []; $("#cartRemise").value = 0; $("#cartRecu").value = 0;
       renderCart();
-      venteAfterClose = true;
+      venteAfterClose = true; cartUsePoints = false;
       showTicket(v);
       try { localStorage.setItem("gs_last_ticket", JSON.stringify(v)); } catch(e) {}
       renderers.vente().catch(() => { });
@@ -1046,6 +1085,9 @@ Ticket : ${v.numero}
 ${lines}
 ${Number(v.remise) ? `Remise : -${money(v.remise)}\n` : ""}
 TOTAL : ${money(v.net)}
+${Number(getParam("tva_pct")) > 0 ? `dont TVA ${getParam("tva_pct")}% : ${money(Math.round(Number(v.net) * Number(getParam("tva_pct")) / (100 + Number(getParam("tva_pct")))))}
+` : ""}${Number(v.points_utilises) ? `Points utilisés : -${v.points_utilises} pts (${money(v.points_valeur || 0)})
+` : ""}
 Paiement : ${modeLabelT}
 Reçu : ${money(v.recu)}
 ${Number(v.rendu) ? `Rendu : ${money(v.rendu)}` : ""}
@@ -1335,7 +1377,11 @@ function startScanVideo() {
     }).catch(() => { st.textContent = "📷 Caméra bloquée (autorisation refusée ou page en http). Utilisez la photo 📸 ou la saisie manuelle."; });
     return;
   }
-  /* 2e choix : bibliothèque locale html5-qrcode (Safari/Firefox) */
+  /* 2e choix : bibliothèque locale html5-qrcode (Safari/Firefox) — chargée à la demande */
+  if (!window.Html5Qrcode) {
+    ensureScript("/js/html5-qrcode.min.js?v=16").then(() => startScanVideo()).catch(() => { });
+    return;
+  }
   if (window.Html5Qrcode) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { st.textContent = "📷 Caméra non accessible ici — utilisez la photo 📸 ou la saisie manuelle."; return; }
     try {
@@ -1402,7 +1448,7 @@ renderers.releve = async function () {
   const ca = vts.reduce((s, v) => s + Number(v.net), 0);
   const modeCards = Object.keys(byMode).map(code => `<div class="card"><div class="k">${esc(modeLabel(code))}</div><div class="v">${money(byMode[code])}</div></div>`).join("");
   $("#releveBox").innerHTML = `
-    <div class="row wrap" style="margin-bottom:8px"><p class="muted grow" style="margin:0">Lecture seule - votre relevé du ${new Date().toLocaleDateString("fr-FR")}</p><button class="btn small" id="releveExport" title="Exporter en CSV">⬇️ CSV</button></div>
+    <div class="row wrap" style="margin-bottom:8px"><p class="muted grow" style="margin:0">Lecture seule - votre relevé du ${new Date().toLocaleDateString("fr-FR")}</p><button class="btn small" id="releveZBtn" title="Rapport Z imprimable de la caisse du jour">🧾 Rapport Z</button><button class="btn small" id="releveExport" title="Exporter en CSV">⬇️ CSV</button></div>
     <div class="cards">
       <div class="card"><div class="k">Mes ventes</div><div class="v">${money(ca)}</div></div>
       ${modeCards}
@@ -1414,6 +1460,17 @@ renderers.releve = async function () {
     (vts.length === 0 ? `<tr><td colspan="6" class="empty">Aucune vente aujourd'hui</td></tr>` :
       pgSlice("releve", vts).part.map(v => `<tr><td><b>${esc(v.numero)}</b></td><td>${fmtDate(v.date)}</td><td class="num">${(v.items || []).reduce((s, i) => s + Number(i.qte), 0)}</td><td class="num">${money(v.net)}</td><td>${esc(modeLabel(v.mode))}</td><td><button class="btn small" data-releveticket="${v.id}">🧾 Ticket</button></td></tr>`).join("")) +
     `</table></div>`;
+  const zBtn = $("#releveZBtn");
+  if (zBtn) zBtn.addEventListener("click", () => {
+    const lignes = vts.map(v => `<tr><td>${esc(v.numero)}</td><td>${fmtDate(v.date)}</td><td>${esc(modeLabel(v.mode))}</td><td style="text-align:right">${money(v.net)}</td></tr>`).join("");
+    imprimer("Rapport Z", `<div style="font-family:monospace">
+      <h2 style="text-align:center;margin:2px">RAPPORT Z</h2>
+      <p style="text-align:center">${esc((DB.boutique || {}).nom || "")} — ${new Date().toLocaleDateString("fr-FR")}<br>${esc(cur ? cur.nom : "")}</p>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">${lignes}</table>
+      <h3 style="text-align:right">Total : ${money(ca)} (${vts.length} tickets)</h3>
+      ${caisse ? `<h3 style="text-align:right">Fonds : ${money(caisse.fonds_initial)} · Attendu espèces : ${money(caisse.attendu_especes)} · Versé : ${money(caisse.verse_total)}</h3>` : ""}
+    </div>`, "80mm");
+  });
   const expBtn = $("#releveExport");
   if (expBtn) expBtn.addEventListener("click", () => {
     downloadCSV("releve-" + todayKey() + ".csv", [["Ticket","Heure","Articles","Total","Paiement"]].concat(vts.map(v => [v.numero, fmtDate(v.date), String((v.items || []).reduce((s, i) => s + Number(i.qte), 0)), String(v.net), modeLabel(v.mode)])));
@@ -1466,7 +1523,7 @@ function renderProdGrid(shown) {
     + pg.part.map(function(p) {
       return '<div class="card" style="cursor:pointer;position:relative">'
         + '<div style="display:flex;gap:8px;align-items:start">'
-        + (p.photo ? '<img src="' + p.photo + '" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex:none">' : '')
+        + (p.has_photo ? '<img src="/api/produits/' + p.id + '/photo" loading="lazy" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex:none">' : '')
         + '<div style="flex:1;min-width:0">'
         + '<div style="font-weight:700;font-size:14px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p.nom) + ' ' + _prodFlags(p) + '</div>'
         + '<div style="font-size:12px;color:var(--muted);margin-top:2px">' + _prodMeta(p) + '</div>'
@@ -1487,7 +1544,7 @@ function renderProdTable(shown) {
     + '<tr><th>Photo</th><th>Produit</th><th>Famille</th><th>Code-barres</th><th class="num">Prix achat</th><th class="num">Prix vente</th><th class="num">Bénéfice</th><th class="num">Stock</th><th class="sticky-r">Actions</th></tr>';
   pg.part.forEach(function(p) {
     h += '<tr>'
-      + '<td>' + (p.photo ? '<img src="' + p.photo + '" style="width:36px;height:36px;object-fit:cover;border-radius:6px">' : '-') + '</td>'
+      + '<td>' + (p.has_photo ? '<img src="/api/produits/' + p.id + '/photo" loading="lazy" style="width:36px;height:36px;object-fit:cover;border-radius:6px">' : '-') + '</td>'
       + '<td>' + esc(p.nom) + ' ' + _prodFlags(p) + '</td>'
       + '<td>' + esc(p.famille || '') + '</td>'
       + '<td>' + esc(p.code || '-') + '</td>'
@@ -1595,7 +1652,7 @@ function prodForm(p) {
     </details>
     <div class="panel" style="margin-top:4px">
       <b style="font-size:13px">📷 Photo du produit</b>
-      <div id="pfPhotoPrev" style="margin-top:6px">${p.photo ? `<img src="${p.photo}" style="max-height:110px;border-radius:8px">` : `<span class="muted">Aucune photo</span>`}</div>
+      <div id="pfPhotoPrev" style="margin-top:6px">${p.has_photo ? `<img src="/api/produits/${p.id}/photo" style="max-height:110px;border-radius:8px">` : `<span class="muted">Aucune photo</span>`}</div>
       <div class="row" style="margin-top:6px">
         <button class="btn small primary" id="pfPhotoCam" type="button">📷 Prendre une photo</button>
         <button class="btn small" id="pfPhotoLoad" type="button">📁 Charger une photo</button>
@@ -1628,16 +1685,17 @@ function prodForm(p) {
     if (c > 0 && q > 0) { const u = Math.round(c / q); $("#pfPA").value = u; $("#pfCalc").textContent = `Prix à l'unité calculé : ${money(u)} (${money(c)} ÷ ${q})`; }
   };
   $("#pfCarton").addEventListener("input", calc); $("#pfCartonQte").addEventListener("input", calc);
-  let prodPhoto = p.photo || null;
-  const showPhoto = () => { $("#pfPhotoPrev").innerHTML = prodPhoto ? `<img src="${prodPhoto}" style="max-height:110px;border-radius:8px">` : `<span class="muted">Aucune photo</span>`; };
+  /* photo non chargée dans les listes : envoi seulement si l'utilisateur la modifie ou la supprime */
+  let prodPhoto = null, photoDirty = false;
+  const showPhoto = () => { $("#pfPhotoPrev").innerHTML = (prodPhoto || (p.has_photo && !photoDirty)) ? `<img src="${prodPhoto || "/api/produits/" + p.id + "/photo"}" style="max-height:110px;border-radius:8px">` : `<span class="muted">Aucune photo</span>`; };
   const onPhoto = async e => {
     const f = e.target.files && e.target.files[0];
-    if (f) { try { prodPhoto = await readImage(f, 400); showPhoto(); } catch (err) { toast("Photo illisible"); } }
+    if (f) { try { prodPhoto = await readImage(f, 400); photoDirty = true; showPhoto(); } catch (err) { toast("Photo illisible"); } }
     e.target.value = "";
   };
   $("#pfPhotoCam").addEventListener("click", () => $("#pfPhotoCamInput").click());
   $("#pfPhotoLoad").addEventListener("click", () => $("#pfPhotoLoadInput").click());
-  $("#pfPhotoDel").addEventListener("click", () => { prodPhoto = null; showPhoto(); });
+  $("#pfPhotoDel").addEventListener("click", () => { prodPhoto = null; photoDirty = true; showPhoto(); });
   $("#pfPhotoCamInput").addEventListener("change", onPhoto);
   $("#pfPhotoLoadInput").addEventListener("change", onPhoto);
   $("#pfSave").addEventListener("click", async () => {
@@ -1655,7 +1713,7 @@ function prodForm(p) {
       prix_vente: pv,
       stock_min: numV($("#pfMin")) || 0,
       actif: $("#pfActif").checked,
-      photo: prodPhoto,
+      ...(photoDirty ? { photo: prodPhoto } : {}),
       gere_par_lot: $("#pfLot").checked,
       unite: $("#pfUnite") ? $("#pfUnite").value : 'pcs',
       emplacement: $("#pfEmplacement") ? $("#pfEmplacement").value.trim() : null,
@@ -1715,7 +1773,7 @@ function renderStProduits(box, prods) {
       <tr><th>Produit</th><th>Lot</th><th class="num">Stock</th><th class="num">Seuil</th><th>Statut</th><th class="sticky-r">Actions</th></tr>
       ${shown.length === 0 ? `<tr><td colspan="6" class="empty">Aucun produit${stockFaible ? " sous le seuil" : ""}</td></tr>` :
         pgSlice("stProduits", shown).part.map(p => `<tr>
-        <td>${p.photo ? `<img src="${p.photo}" style="width:30px;height:30px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:6px">` : ""}${esc(p.nom)}</td>
+        <td>${p.has_photo ? `<img src="/api/produits/${p.id}/photo" loading="lazy" style="width:30px;height:30px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:6px">` : ""}${esc(p.nom)}</td>
         <td><span class="badge ${p.gere_par_lot ? "info" : "off"}" style="font-size:10px;padding:1px 6px">${p.gere_par_lot ? "📦 Lot" : "—"}</span></td>
         <td class="num">${p.stock}</td>
         <td class="num">${p.stock_min}</td>
@@ -3433,7 +3491,10 @@ function modeForm(m) {
 
 /* ---------- impression ---------- */
 function barcodeSVG(code) {
-  if (typeof JsBarcode === "undefined" || !code) return "";
+  if (typeof JsBarcode === "undefined" || !code) {
+    if (code) ensureScript("/js/JsBarcode.min.js?v=16").catch(() => { }); /* dispo au prochain affichage */
+    return "";
+  }
   const div = document.createElement("div");
   div.style.position = "absolute"; div.style.left = "-9999px";
   document.body.appendChild(div);
@@ -4132,8 +4193,8 @@ document.addEventListener("keydown", function(e) {
   $("#rapPrintBtn").addEventListener("click", () => {
     imprimer("Rapport", `<h2>Rapport du ${$("#rapFrom").value} au ${$("#rapTo").value} (par ${$("#rapGroup").value})</h2>` + $("#rapportBox").innerHTML, "A4");
   });
-  $("#audUserFilter").addEventListener("change", () => renderers.journal().catch(() => { }));
-  $("#audSearch").addEventListener("input", () => renderers.journal().catch(() => { }));
+  $("#audUserFilter").addEventListener("change", debounce(() => renderers.journal().catch(() => { })));
+  $("#audSearch").addEventListener("input", debounce(() => renderers.journal().catch(() => { })));
   document.querySelectorAll("#view-rapports [data-rtab]").forEach(b => b.addEventListener("click", () => {
     const t = b.dataset.rtab;
     document.querySelectorAll("#view-rapports [data-rtab]").forEach(x => x.classList.toggle("on", x === b));
@@ -4167,7 +4228,7 @@ document.addEventListener("keydown", function(e) {
   });
 
   const clSearch = $("#clientSearch");
-  if (clSearch) clSearch.addEventListener("input", () => renderers.clients().catch(() => {}));
+  if (clSearch) clSearch.addEventListener("input", debounce(() => renderers.clients().catch(() => {})));
 
   const cartClSel = $("#cartClientSel");
   if (cartClSel) cartClSel.addEventListener("change", updateCartClientInfo);

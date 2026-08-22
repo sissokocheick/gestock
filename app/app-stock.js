@@ -105,12 +105,17 @@ window.AppStock = (function () {
     if (!nom) return toast("Indiquez le nom du fournisseur");
     try {
       const sugg = await api("/reappro/suggestions");
-      let fait = 0;
-      for (const s of sugg) {
-        await api(`/reappro/suggestions/${s.suggestion_id}/commander`, { method: "POST", body: JSON.stringify({ fournisseur_nom: nom }) });
-        fait++;
-      }
-      toast(fait + " commande(s) créée(s) pour " + nom);
+      if (!sugg.length) { toast("Rien à commander ✅"); return; }
+      /* Une seule commande groupée via /api/commandes (le stock réel fait foi) */
+      const four = await api("/fournisseurs");
+      let f = four.find(x => (x.nom || "").toLowerCase() === nom.toLowerCase());
+      if (!f) f = await api("/fournisseurs", { method: "POST", body: JSON.stringify({ nom }) });
+      await api("/commandes", { method: "POST", body: JSON.stringify({
+        fournisseur_id: f.id,
+        notes: "Réappro auto (sous le seuil)",
+        items: sugg.map(s => ({ produitId: s.produit_id, qte: s.qte_suggeree, prix_achat: s.prix_achat }))
+      })});
+      toast(sugg.length + " article(s) commandé(s) à " + nom);
       if (cmdBox) renderCommander(cmdBox);
     } catch (e) { toast("Erreur : " + e.message); }
   }

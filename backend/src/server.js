@@ -273,7 +273,7 @@ app.get("/api/parametres", auth, async (req, res) => {
   res.json(rows);
 });
 app.put("/api/parametres", auth, need("R_PARAMS"), async (req, res) => {
-  const keys = ["ticket_width", "ticket_barcode", "show_demo", "remise_max_pct", "versement_validateur", "annulation_validateur"];
+  const keys = ["ticket_width", "ticket_barcode", "show_demo", "remise_max_pct", "versement_validateur", "annulation_validateur", "valeur_point", "tva_pct"];
   for (const k of keys) {
     if (req.body[k] !== undefined) {
       await pool.query("INSERT INTO parametres(cle, valeur) VALUES($1,$2) ON CONFLICT (cle) DO UPDATE SET valeur=EXCLUDED.valeur",
@@ -331,6 +331,10 @@ app.delete("/api/familles/:id", auth, need("R_PRODUITS"), async (req, res) => {
   broadcast({ type: "produits" });
   res.json({ ok: true });
 });
+/* Colonne photo (base64 lourd) exclue des listes : servie par /api/produits/:id/photo avec cache navigateur */
+const PROD_COLS = `p.id, p.nom, p.famille_id, p.code, p.prix_achat, p.prix_vente, p.stock, p.stock_min,
+  p.actif, p.gere_par_lot, p.reference, p.unite, p.emplacement, p.parent_produit_id, p.qte_par_parent,
+  (p.photo IS NOT NULL) AS has_photo`;
 app.get("/api/produits", auth, async (req, res) => {
   const q = req.query.search ? "%" + req.query.search + "%" : "%";
   const fam = req.query.famille ? Number(req.query.famille) : null;
@@ -343,16 +347,26 @@ app.get("/api/produits", auth, async (req, res) => {
        WHERE (p.nom ILIKE $1 OR p.code ILIKE $1) AND ($2::bigint IS NULL OR p.famille_id = $2)`, [q, fam]);
     const total = countQ.rows[0].total;
     const { rows } = await pool.query(
-      `SELECT p.*, f.nom AS famille, p2.nom AS parent_nom FROM produits p LEFT JOIN familles f ON f.id = p.famille_id LEFT JOIN produits p2 ON p2.id = p.parent_produit_id
+      `SELECT ${PROD_COLS}, f.nom AS famille, p2.nom AS parent_nom FROM produits p LEFT JOIN familles f ON f.id = p.famille_id LEFT JOIN produits p2 ON p2.id = p.parent_produit_id
        WHERE (p.nom ILIKE $1 OR p.code ILIKE $1) AND ($2::bigint IS NULL OR p.famille_id = $2)
        ORDER BY p.nom LIMIT $3 OFFSET $4`, [q, fam, limit, page * limit]);
     return res.json({ rows, total, page, limit });
   }
   const { rows } = await pool.query(
-    `SELECT p.*, f.nom AS famille, p2.nom AS parent_nom FROM produits p LEFT JOIN familles f ON f.id = p.famille_id LEFT JOIN produits p2 ON p2.id = p.parent_produit_id
+    `SELECT ${PROD_COLS}, f.nom AS famille, p2.nom AS parent_nom FROM produits p LEFT JOIN familles f ON f.id = p.famille_id LEFT JOIN produits p2 ON p2.id = p.parent_produit_id
      WHERE (p.nom ILIKE $1 OR p.code ILIKE $1) AND ($2::bigint IS NULL OR p.famille_id = $2)
      ORDER BY p.nom`, [q, fam]);
   res.json(rows);
+});
+/* Photo d'un produit (cache 24h côté navigateur) */
+app.get("/api/produits/:id/photo", async (req, res) => {
+  const { rows: [p] } = await pool.query("SELECT photo FROM produits WHERE id=$1", [req.params.id]);
+  if (!p || !p.photo) return res.status(404).end();
+  const m = /^data:(image\/[a-z+]+);base64,(.*)$/s.exec(p.photo);
+  if (!m) return res.status(404).end();
+  res.set("Cache-Control", "private, max-age=86400");
+  res.set("Content-Type", m[1]);
+  res.end(Buffer.from(m[2], "base64"));
 });
 app.post("/api/produits", auth, need("R_PRODUITS"), async (req, res) => {
   const p = req.body;
@@ -415,10 +429,22 @@ app.put("/api/produits/:id", auth, need("R_PRODUITS"), async (req, res) => {
     }
     const { rows: [famRow] } = await c.query("SELECT gere_par_lot FROM familles WHERE id=$1 AND actif=true", [famId]);
     if (!famRow) throw Object.assign(new Error("Famille inconnue ou désactivée"), { status: 400 });
-    return (await c.query(
-      `UPDATE produits SET nom=$1, famille_id=$2, code=$3, photo=$4, prix_achat=$5, prix_vente=$6, stock_min=$7, actif=$8, gere_par_lot=$9, unite=$10, emplacement=$11, parent_produit_id=$12, qte_par_parent=$13
-       WHERE id=$14 RETURNING *`,
-      [normNom(p.nom), famId, p.code || null, p.photo || null, Number(p.prix_achat) || 0, Number(p.prix_vente) || 0, Number(p.stock_min) || 0, p.actif !== false, p.gere_par_lot === true || famRow.gere_par_lot === true, p.unite || 'pcs', p.emplacement || null, p.parent_produit_id ? Number(p.parent_produit_id) : null, Number(p.qte_par_parent) || 1, req.params.id])).rows[0];
+    /* photo absente du body = conserver l'existante (elle n'est plus dans les listes) */
+    const withPhoto = p.photo !== undefined;
+    const cols = ["nom=$1", "famille_id=$2", "code=$3"];
+    const args = [normNom(p.nom), famId, p.code || null];
+    if (withPhoto) { cols.push(`photo=$${args.length + 1}`); args.push(p.photo || null); }
+    args.push(Number(p.prix_achat) || 0); cols.push(`prix_achat=$${args.length}`);
+    args.push(Number(p.prix_vente) || 0); cols.push(`prix_vente=$${args.length}`);
+    args.push(Number(p.stock_min) || 0); cols.push(`stock_min=$${args.length}`);
+    args.push(p.actif !== false); cols.push(`actif=$${args.length}`);
+    args.push(p.gere_par_lot === true || famRow.gere_par_lot === true); cols.push(`gere_par_lot=$${args.length}`);
+    args.push(p.unite || 'pcs'); cols.push(`unite=$${args.length}`);
+    args.push(p.emplacement || null); cols.push(`emplacement=$${args.length}`);
+    args.push(p.parent_produit_id ? Number(p.parent_produit_id) : null); cols.push(`parent_produit_id=$${args.length}`);
+    args.push(Number(p.qte_par_parent) || 1); cols.push(`qte_par_parent=$${args.length}`);
+    args.push(req.params.id);
+    return (await c.query(`UPDATE produits SET ${cols.join(", ")} WHERE id=$${args.length} RETURNING *`, args)).rows[0];
   });
   broadcast({ type: "produits" });
   res.json(r);
@@ -587,13 +613,32 @@ app.post("/api/ventes", auth, need("R_VENTE"), async (req, res) => {
         }
       }
     }
-    const pointsGagnes = clientId && net > 0 ? Math.floor(net / 1000) : 0;
+    /* Utilisation des points fidélité (1 point = valeur_point F, paramétrable) */
+    let pointsUtilises = 0, pointsValeur = 0;
+    const pts = Math.max(0, Math.floor(Number(req.body.points_utilises) || 0));
+    if (pts > 0 && clientId) {
+      const { rows: [pcl] } = await c.query("SELECT points FROM clients WHERE id=$1 FOR UPDATE", [clientId]);
+      const { rows: [vp] } = await c.query("SELECT valeur FROM parametres WHERE cle='valeur_point'");
+      const valPt = vp ? Math.max(0, Number(vp.valeur) || 0) : 25;
+      if (!pcl) throw Object.assign(new Error("Client introuvable"), { status: 400 });
+      if (valPt <= 0) throw Object.assign(new Error("Les points fidélité ne sont pas utilisables actuellement"), { status: 400 });
+      pointsUtilises = Math.min(pts, Number(pcl.points) || 0);
+      pointsValeur = Math.min(pointsUtilises * valPt, net);
+      pointsUtilises = Math.floor(pointsValeur / valPt);
+      pointsValeur = pointsUtilises * valPt;
+    }
+    const netFinal = net - pointsValeur;
+    const pointsGagnes = clientId && netFinal > 0 ? Math.floor(netFinal / 1000) : 0;
     const { rows: [v] } = await c.query(
-      "INSERT INTO ventes(numero, user_id, caisse_id, remise, total, net, mode, recu, rendu, client_id, client_nom, points_gagnes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *",
-      [numero, req.user.id, caisse.id, rem, total, net, mode, recuStored, rendu, clientId, finalClientNom, pointsGagnes]);
+      "INSERT INTO ventes(numero, user_id, caisse_id, remise, total, net, mode, recu, rendu, client_id, client_nom, points_gagnes, points_utilises) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *",
+      [numero, req.user.id, caisse.id, rem, total, netFinal, mode, recuStored, rendu, clientId, finalClientNom, pointsGagnes, pointsUtilises]);
     if (clientId && pointsGagnes > 0) {
       await c.query("UPDATE clients SET points = points + $1 WHERE id = $2", [pointsGagnes, clientId]);
     }
+    if (clientId && pointsUtilises > 0) {
+      await c.query("UPDATE clients SET points = GREATEST(0, points - $1) WHERE id = $2", [pointsUtilises, clientId]);
+    }
+    v.points_utilises = pointsUtilises; v.points_valeur = pointsValeur;
     for (const it of items) {
       const p = map[it.produitId];
       const q = Number(it.qte);
@@ -1525,9 +1570,13 @@ app.post("/api/commandes/:id/receptionner", auth, need("R_STOCK"), async (req, r
       }
       await c.query("INSERT INTO mouvements(type, produit_id, qte, motif, user_id, ref, lot_id, fournisseur_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
         ["Entrée (réception fournisseur)", pid, q, "Réception commande #" + cmd.id + (cmd.fournisseur_nom ? " - " + cmd.fournisseur_nom : ""), req.user.id, "CMD" + cmd.id, lotId, cmd.fournisseur_id || null]);
+      await c.query("UPDATE commande_items SET qte_recue = COALESCE(qte_recue,0) + $1 WHERE commande_id=$2 AND produit_id=$3", [q, cmd.id, pid]);
     }
-    await c.query("UPDATE commandes SET statut='recue' WHERE id=$1", [cmd.id]);
-    return { id: cmd.id, statut: "recue" };
+    const { rows: [reste] } = await c.query(
+      "SELECT COUNT(*)::int AS n FROM commande_items WHERE commande_id=$1 AND COALESCE(qte_recue,0) < qte", [cmd.id]);
+    const statut = reste.n === 0 ? "recue" : "partielle";
+    await c.query("UPDATE commandes SET statut=$1 WHERE id=$2", [statut, cmd.id]);
+    return { id: cmd.id, statut };
   });
   broadcast({ type: "stock" });
   res.json(r);
@@ -1865,10 +1914,18 @@ app.get("/api/versements", auth, need("R_POINT"), async (req, res) => {
 /* ---------- Module Stock avanc� (magasins, services, bons FEFO, inventaires, r�appro) ---------- */
 require("./module-stock")({ app, auth, need, broadcast });
 
+/* ---------- santé (avant le catch-all statique) ---------- */
+app.get("/api/health", async (req, res) => {
+  try { await pool.query("SELECT 1"); res.json({ ok: true, uptime: Math.round(process.uptime()), date: new Date().toISOString() }); }
+  catch (e) { res.status(503).json({ ok: false, error: "Base de données injoignable" }); }
+});
+
 /* En production : servir le frontend statique depuis ../app */
 const appDir = path.join(__dirname, "..", "..", "app");
 if (fs.existsSync(appDir)) {
-  app.use(express.static(appDir, { index: "index.html" }));
+  app.use(express.static(appDir, { index: "index.html", setHeaders: (res, pth) => {
+    if (/\.(js|css|svg|png|webmanifest)$/.test(pth)) res.set("Cache-Control", "public, max-age=86400");
+  } }));
   app.get("*", (req, res) => {
     if (req.path.startsWith("/api") || req.path.startsWith("/ws"))
       return res.status(404).json({ error: "Route inconnue" });
@@ -1895,14 +1952,22 @@ async function initSchema() {
     "ALTER TABLE mouvements ADD COLUMN IF NOT EXISTS bon_id BIGINT",
     "ALTER TABLE mouvements ADD COLUMN IF NOT EXISTS lot_id BIGINT",
     "ALTER TABLE mouvements ADD COLUMN IF NOT EXISTS fournisseur_id BIGINT",
+    "CREATE INDEX IF NOT EXISTS idx_produits_nom ON produits(nom)",
+    "CREATE INDEX IF NOT EXISTS idx_items_produit ON vente_items(produit_id)",
+    "CREATE INDEX IF NOT EXISTS idx_mouvements_produit ON mouvements(produit_id)",
+    "CREATE INDEX IF NOT EXISTS idx_lots_prod_num ON lots(produit_id, numero)",
+    "ALTER TABLE commande_items ADD COLUMN IF NOT EXISTS qte_recue NUMERIC(12,2) DEFAULT 0",
+    "ALTER TABLE ventes ADD COLUMN IF NOT EXISTS points_utilises INT DEFAULT 0",
   ];
   for (const m of criticalMigrations) {
     try { await pool.query(m); console.log("✅ Migration OK:", m); } catch (e) { console.log("⚠️ Migration skip:", m, e.message); }
   }
-  // 2) Schéma complet — exécution en une seule requête (pg supporte le multi-statement,
-  //    contrairement à un split(";") qui casse les fonctions PL/pgSQL)
+  // 2) Schéma complet — versionné dans schema_migrations (plus de re-jeu à chaque boot)
+  await pool.query("CREATE TABLE IF NOT EXISTS schema_migrations(fichier TEXT PRIMARY KEY, applique_le TIMESTAMPTZ DEFAULT now())").catch(() => { });
   for (const f of ["schema.sql", "module-stock-v1.sql"]) {
     try {
+      const { rows: [deja] } = await pool.query("SELECT fichier FROM schema_migrations WHERE fichier=$1", [f]);
+      if (deja) continue;
       let sql = fs.readFileSync(path.join(__dirname, "..", f), "utf8");
       sql = sql.split("\n").filter(l => !l.match(/^GRANT\b|^BEGIN\s*;|^COMMIT\s*;|^ALTER DEFAULT PRIVILEGES/i)).join("\n");
       sql = sql.replace(/\bBEGIN\s*;/gi, "").replace(/\bCOMMIT\s*;/gi, "");
@@ -1915,6 +1980,7 @@ async function initSchema() {
         }
         console.log("⚠️ " + f + " appliqué instruction par instruction :", e.message);
       }
+      await pool.query("INSERT INTO schema_migrations(fichier) VALUES($1) ON CONFLICT (fichier) DO NOTHING", [f]);
       console.log("✅ " + f + " appliqué");
     } catch (e) {
       console.error("⚠️ " + f + ":", e.message);
@@ -1950,6 +2016,16 @@ async function autoSeed() {
 process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);
 });
+
+/* ---------- santé & arrêt propre ---------- */
+function shutdown(sig) {
+  console.log("⏹ " + sig + " — arrêt propre (ventes en cours terminées)...");
+  for (const c of clients) { try { c.close(1001, "Serveur en arrêt"); } catch (e) { } }
+  server.close(() => { pool.end().then(() => process.exit(0)).catch(() => process.exit(0)); });
+  setTimeout(() => process.exit(0), 8000); /* garde-fou */
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 initSchema().then(() => autoSeed()).then(() => {
   server.listen(PORT, () => console.log("✅ Backend Gestion Stock & Vente sur http://localhost:" + PORT + " (WebSocket: /ws)"));
 });
