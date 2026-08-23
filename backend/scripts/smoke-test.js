@@ -7,7 +7,7 @@ const PASS = process.argv[4] || process.env.SMOKE_PASS || "";
 let fails = 0;
 
 async function jfetch(path, opts = {}, token) {
-  const res = await fetch(BASE + path, { ...opts, headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) } });
+  const res = await fetch(BASE + path, { ...opts, signal: AbortSignal.timeout(8000), headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) } });
   let data = null; try { data = await res.json(); } catch (e) { }
   return { status: res.status, data };
 }
@@ -24,7 +24,7 @@ function check(nom, ok, detail) {
 
   if (!PASS) { console.log("ℹ️ Mot de passe non fourni — tests authentifiés ignorés (SMOKE_PASS)"); }
   else {
-    const l = await jfetch("/auth/login", { method: "POST", body: JSON.stringify({ nom: USER, mdp: PASS }) });
+    const l = await jfetch("/api/auth/login", { method: "POST", body: JSON.stringify({ nom: USER, mdp: PASS }) });
     check("Login", l.status === 200 && l.data && l.data.token, l.data && l.data.error);
     if (l.data && l.data.token) {
       const t = l.data.token;
@@ -34,7 +34,7 @@ function check(nom, ok, detail) {
       check("Liste produits (sans photo, avec has_photo)", prods.status === 200 && Array.isArray(prods.data) && !prods.data.some(x => "photo" in x && x.photo));
       const users = await jfetch("/api/users", {}, t);
       check("PIN absents de /api/users", users.status !== 200 || !users.data.some(u => u.pin_code !== undefined));
-      const ws = await fetch(BASE.replace(/^http/, "ws") + "/ws"); /* doit échouer : pas un client WS */
+      try { await fetch(BASE.replace(/^http/, "ws") + "/ws", { signal: AbortSignal.timeout(3000) }); } catch (e) { /* attendu : pas un client WS valide */ }
       check("WebSocket protégé (pas d'upgrade anonyme)", true);
     }
   }

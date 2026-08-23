@@ -170,7 +170,11 @@ CREATE TABLE IF NOT EXISTS versements_caisse (
   montant   NUMERIC(12,2) NOT NULL,
   mode      TEXT NOT NULL DEFAULT 'especes',
   motif     TEXT,
-  user_id   BIGINT REFERENCES users(id)
+  user_id   BIGINT REFERENCES users(id),
+  statut      TEXT NOT NULL DEFAULT 'en_attente',
+  valide_par  BIGINT REFERENCES users(id),
+  valide_le   TIMESTAMPTZ,
+  motif_refus TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_versements_caisse ON versements_caisse(caisse_id);
 
@@ -275,11 +279,14 @@ CREATE TABLE IF NOT EXISTS commandes (
   id             BIGSERIAL PRIMARY KEY,
   fournisseur_id BIGINT REFERENCES fournisseurs(id) ON DELETE SET NULL,
   date           TIMESTAMPTZ NOT NULL DEFAULT now(),
-  statut         TEXT NOT NULL DEFAULT 'en_cours' CHECK (statut IN ('en_cours','recue')),
+  statut         TEXT NOT NULL DEFAULT 'en_cours' CHECK (statut IN ('en_cours','recue','partielle')),
   livraison      NUMERIC(12,2) NOT NULL DEFAULT 0,
   notes          TEXT,
   user_id        BIGINT REFERENCES users(id)
 );
+/* Les bases anciennes ont un CHECK sans 'partielle' : on le remplace (idempotent) */
+ALTER TABLE commandes DROP CONSTRAINT IF EXISTS commandes_statut_check;
+ALTER TABLE commandes ADD CONSTRAINT commandes_statut_check CHECK (statut IN ('en_cours','recue','partielle'));
 CREATE INDEX IF NOT EXISTS idx_commandes_date ON commandes(date);
 CREATE TABLE IF NOT EXISTS commande_items (
   id          BIGSERIAL PRIMARY KEY,
@@ -300,7 +307,11 @@ CREATE TABLE IF NOT EXISTS depenses (
   motif      TEXT,
   mode       TEXT NOT NULL DEFAULT 'especes',
   user_id    BIGINT REFERENCES users(id),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  annule       BOOLEAN DEFAULT false,
+  annule_le    TIMESTAMPTZ,
+  annule_par   TEXT,
+  annule_motif TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_depenses_date ON depenses(date);
 CREATE INDEX IF NOT EXISTS idx_depenses_categorie ON depenses(categorie);

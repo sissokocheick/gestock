@@ -1945,7 +1945,34 @@ if (fs.existsSync(appDir)) {
 
 /* ---------- init schéma + auto-seed ---------- */
 async function initSchema() {
-  // 1) Migrations critiques AVANT le schéma complet
+  /* 0) Schéma complet D'ABORD : crée toute table manquante avec TOUTES ses colonnes.
+     Les étapes de rattrapage ci-dessous n'ajoutent des colonnes qu'aux tables déjà
+     existantes : une table créée APRÈS elles aurait donc manqué ses colonnes récentes
+     (c'est ce qui cassait versements_caisse.statut / depenses.annule sur les bases
+     créées avant ces fonctionnalités — « des données qui ne fonctionnent plus »). */
+  try {
+    await pool.query("CREATE TABLE IF NOT EXISTS schema_migrations(fichier TEXT PRIMARY KEY, applique_le TIMESTAMPTZ DEFAULT now())");
+    for (const f of ["schema.sql", "module-stock-v1.sql"]) {
+      const { rows: [deja] } = await pool.query("SELECT fichier FROM schema_migrations WHERE fichier=$1", [f]);
+      if (deja) continue;
+      let sql = fs.readFileSync(path.join(__dirname, "..", f), "utf8");
+      sql = sql.split("\n").filter(l => !l.match(/^GRANT\b|^BEGIN\s*;|^COMMIT\s*;|^ALTER DEFAULT PRIVILEGES/i)).join("\n");
+      sql = sql.replace(/\bBEGIN\s*;/gi, "").replace(/\bCOMMIT\s*;/gi, "");
+      try { await pool.query(sql); }
+      catch (e) {
+        /* Repli : exécuter instruction par instruction (une erreur n'empêche pas les suivantes) */
+        const stmts = sql.split(";").map(s => s.trim()).filter(s => s.length > 5);
+        for (const s of stmts) {
+          try { await pool.query(s); } catch (e2) { /* déjà appliqué ou privilèges insuffisants */ }
+        }
+        console.log("⚠️ " + f + " appliqué instruction par instruction :", e.message);
+      }
+      await pool.query("INSERT INTO schema_migrations(fichier) VALUES($1) ON CONFLICT (fichier) DO NOTHING", [f]);
+      console.log("✅ " + f + " appliqué");
+    }
+  } catch (e) { console.error("⚠️ Application du schéma complet :", e.message); }
+
+  // 1) Migrations critiques : rattrapage des bases anciennes (tables déjà existantes)
   const criticalMigrations = [
     // Colonnes manquantes sur tables existantes
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS derniere_connexion TIMESTAMPTZ",
@@ -1990,6 +2017,10 @@ async function initSchema() {
     "ALTER TABLE depenses ADD COLUMN IF NOT EXISTS annule_le TIMESTAMPTZ",
     "ALTER TABLE depenses ADD COLUMN IF NOT EXISTS annule_par TEXT",
     "ALTER TABLE depenses ADD COLUMN IF NOT EXISTS annule_motif TEXT",
+    /* statut 'partielle' sur les commandes (réceptions partielles) :
+       l'ancien CHECK bloque toute réception partielle en base ancienne */
+    "ALTER TABLE commandes DROP CONSTRAINT IF EXISTS commandes_statut_check",
+    "ALTER TABLE commandes ADD CONSTRAINT commandes_statut_check CHECK (statut IN ('en_cours','recue','partielle'))",
   ];
   for (const m of criticalMigrations) {
     try { await pool.query(m); console.log("✅ Migration OK:", m); } catch (e) { console.log("⚠️ Migration skip:", m, e.message); }
@@ -2039,31 +2070,6 @@ async function initSchema() {
     }
     console.log("🔎 Sync schéma : " + tables.length + " tables vérifiées, " + ajoutes + " colonne(s) ajoutée(s), " + absentes.length + " table(s) absente(s)");
   } catch (e) { console.log("⚠️ Sync colonnes :", e.message); }
-
-  // 2) Schéma complet — versionné dans schema_migrations (plus de re-jeu à chaque boot)
-  await pool.query("CREATE TABLE IF NOT EXISTS schema_migrations(fichier TEXT PRIMARY KEY, applique_le TIMESTAMPTZ DEFAULT now())").catch(() => { });
-  for (const f of ["schema.sql", "module-stock-v1.sql"]) {
-    try {
-      const { rows: [deja] } = await pool.query("SELECT fichier FROM schema_migrations WHERE fichier=$1", [f]);
-      if (deja) continue;
-      let sql = fs.readFileSync(path.join(__dirname, "..", f), "utf8");
-      sql = sql.split("\n").filter(l => !l.match(/^GRANT\b|^BEGIN\s*;|^COMMIT\s*;|^ALTER DEFAULT PRIVILEGES/i)).join("\n");
-      sql = sql.replace(/\bBEGIN\s*;/gi, "").replace(/\bCOMMIT\s*;/gi, "");
-      try { await pool.query(sql); }
-      catch (e) {
-        /* Repli : exécuter instruction par instruction (une erreur n'empêche pas les suivantes) */
-        const stmts = sql.split(";").map(s => s.trim()).filter(s => s.length > 5);
-        for (const s of stmts) {
-          try { await pool.query(s); } catch (e2) { /* déjà appliqué ou privilèges insuffisants */ }
-        }
-        console.log("⚠️ " + f + " appliqué instruction par instruction :", e.message);
-      }
-      await pool.query("INSERT INTO schema_migrations(fichier) VALUES($1) ON CONFLICT (fichier) DO NOTHING", [f]);
-      console.log("✅ " + f + " appliqué");
-    } catch (e) {
-      console.error("⚠️ " + f + ":", e.message);
-    }
-  }
 }
 async function autoSeed() {
   const { rows: [{ count }] } = await pool.query("SELECT count(*) FROM users");
@@ -2114,6 +2120,17 @@ async function detectCaps() {
     rows.forEach(r => { DBCAPS[r.column_name] = true; });
     if (!DBCAPS.points_utilises) console.log("⚠️ ventes.points_utilises absent — utilisation des points fidélité désactivée (exécutez scripts/prod-fixes.sql en tant que postgres)");
     if (!DBCAPS.qte_recue) console.log("⚠️ commande_items.qte_recue absent — réceptions partielles désactivées (exécutez scripts/prod-fixes.sql en tant que postgres)");
+    /* Colonnes CRITIQUES : sans elles, clôture de caisse et encaissement plantent */
+    const { rows: crit } = await pool.query(`SELECT table_name || '.' || column_name AS col FROM information_schema.columns
+      WHERE (table_name='caisses' AND column_name IN ('statut','fermee_le','total_attendu','ecart'))
+         OR (table_name='versements_caisse' AND column_name IN ('statut','valide_par'))
+         OR (table_name='depenses' AND column_name='annule')`);
+    const okCols = new Set(crit.map(r => r.col));
+    const manquantes = ["caisses.statut", "caisses.fermee_le", "caisses.total_attendu", "caisses.ecart", "versements_caisse.statut", "versements_caisse.valide_par", "depenses.annule"].filter(c => !okCols.has(c));
+    if (manquantes.length)
+      console.error("❌ COLONNES CRITIQUES MANQUANTES : " + manquantes.join(", ") + " → clôture de caisse et encaissement vont échouer. Vérifiez que l'utilisateur de DATABASE_URL est propriétaire des tables (sinon exécutez scripts/prod-fixes.sql en tant que superutilisateur).");
+    else
+      console.log("✅ Colonnes critiques présentes (clôture de caisse, versements, dépenses)");
   } catch (e) { }
 }
 initSchema().then(() => detectCaps()).then(() => autoSeed()).then(() => {
