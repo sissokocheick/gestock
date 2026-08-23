@@ -3689,6 +3689,19 @@ function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden");
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add("hidden"), 2600);
 }
+/* ---------- fonctions globales utilisées par les attributs onclick inline ----------
+   Le fichier est en "use strict" : selon le contexte d'exécution (service worker,
+   cache ancien, moteur), les déclarations de fonctions ne sont pas toujours
+   visibles depuis les gestionnaires inline HTML, qui cherchent sur window.
+   Sans cette exposition, les 28 boutons « Annuler/Fermer » des modales meurent
+   silencieusement (rien dans la console). */
+window.closeModal = closeModal;
+window.closeScan = closeScan;
+window.go = go;
+window.roleManager = roleManager;
+/* Fonctions de modales appelées par d'autres modules / tests */
+window.openModal = openModal;
+window.clotureForm = clotureForm;
 let confirmCb = null;
 function askConfirm(titre, message, onOk, opts) {
   opts = opts || {};
