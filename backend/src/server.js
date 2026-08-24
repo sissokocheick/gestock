@@ -80,7 +80,7 @@ for (const m of ROUTE_METHODS) {
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT === '0' || !process.env.PORT ? 4000 : Number(process.env.PORT);
 
 /* ---------- temps réel (WebSocket) — authentifié par token JWT ---------- */
 const server = http.createServer(app);
@@ -1070,6 +1070,75 @@ app.get("/api/releve", auth, async (req, res) => {
     rows.forEach(v => v.items = m[v.id] || []);
   }
   res.json(rows);
+});
+
+/* ---------- ma journée (dashboard personnel agrégé) ---------- */
+app.get("/api/journee", auth, async (req, res) => {
+  try {
+    const isAdmin = (req.user.droits || []).includes("R_RAPPORTS");
+    const dateFilter = isAdmin && req.query.date ? req.query.date : new Date().toISOString().slice(0, 10);
+    const userFilter = isAdmin ? null : req.user.id;
+    // Ventes du jour
+    const { rows: ventes } = await pool.query(
+      `SELECT v.*, u.nom AS user_nom FROM ventes v JOIN users u ON u.id=v.user_id
+       WHERE v.date::date = $1 AND ($2::bigint IS NULL OR v.user_id = $2)
+       ORDER BY v.date`, [dateFilter, userFilter]);
+    // Items des ventes du jour
+    let allItems = [];
+    if (ventes.length) {
+      const ids = ventes.map(v => v.id);
+      const { rows: items } = await pool.query("SELECT * FROM vente_items WHERE vente_id = ANY($1::bigint[]) ORDER BY id", [ids]);
+      const m = {}; items.forEach(i => { (m[i.vente_id] = m[i.vente_id] || []).push(i); });
+      ventes.forEach(v => v.items = m[v.id] || []);
+      allItems = items;
+    }
+    // Agrégats
+    const ca = ventes.reduce((s, v) => s + Number(v.net), 0);
+    const nbTickets = ventes.length;
+    const nbArticles = allItems.reduce((s, i) => s + Number(i.qte), 0);
+    const benefice = allItems.reduce((s, i) => s + (Number(i.prix) - Number(i.prix_achat)) * Number(i.qte), 0);
+    // Par mode de paiement
+    const byMode = {};
+    ventes.forEach(v => { byMode[v.mode] = (byMode[v.mode] || 0) + Number(v.net); });
+    // Top produits
+    const prodMap = {};
+    allItems.forEach(i => {
+      const key = i.nom || i.produit_id;
+      if (!prodMap[key]) prodMap[key] = { nom: i.nom, qte: 0, ca: 0, ben: 0 };
+      prodMap[key].qte += Number(i.qte);
+      prodMap[key].ca += Number(i.qte) * Number(i.prix);
+      prodMap[key].ben += (Number(i.prix) - Number(i.prix_achat)) * Number(i.qte);
+    });
+    const topProduits = Object.values(prodMap).sort((a, b) => b.ca - a.ca).slice(0, 8);
+    // Par heure
+    const byHour = {};
+    ventes.forEach(v => {
+      const h = new Date(v.date).getHours();
+      if (!byHour[h]) byHour[h] = { h, ca: 0, nb: 0 };
+      byHour[h].ca += Number(v.net);
+      byHour[h].nb++;
+    });
+    // Par caissière (si admin)
+    const byUser = {};
+    if (isAdmin) {
+      ventes.forEach(v => {
+        if (!byUser[v.user_nom]) byUser[v.user_nom] = { nom: v.user_nom, ca: 0, nb: 0 };
+        byUser[v.user_nom].ca += Number(v.net);
+        byUser[v.user_nom].nb++;
+      });
+    }
+    // Caisse ouverte
+    const { rows: caisses } = await pool.query(
+      `SELECT * FROM caisses WHERE user_id=$1 AND ouverte_le::date=$2 AND statut='ouverte'`, [req.user.id, dateFilter]);
+    res.json({
+      date: dateFilter,
+      ca, nbTickets, nbArticles, benefice,
+      ticketMoyen: nbTickets ? ca / nbTickets : 0,
+      byMode, topProduits, byHour: Object.values(byHour).sort((a, b) => a.h - b.h),
+      byUser: Object.values(byUser).sort((a, b) => b.ca - a.ca),
+      ventes, caisse: caisses[0] || null
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 /* ---------- point du soir ----------
@@ -2097,6 +2166,87 @@ async function autoSeed() {
   } catch (e) { console.error("⚠️ Auto-seed échoué:", e.message); }
 }
 
+/* ---------- nettoyage auto des données de test au démarrage ---------- */
+async function cleanupTestData() {
+  const log = [];
+  try {
+    /* 1) Produits doublons → garder le plus ancien, transférer ventes/lots, supprimer les copies */
+    const { rows: dupes } = await pool.query(
+      `SELECT nom, COUNT(*) c, MIN(id) keep_id FROM produits GROUP BY nom HAVING COUNT(*)>1`);
+    for (const d of dupes) {
+      const { rows: copies } = await pool.query(
+        `SELECT id FROM produits WHERE nom=$1 AND id!=$2 ORDER BY id`, [d.nom, d.keep_id]);
+      for (const cp of copies) {
+        // Reassigner ventes_items vers le produit gardé
+        await pool.query(`UPDATE vente_items SET produit_id=$1 WHERE produit_id=$2`, [d.keep_id, cp.id]);
+        // Reassigner mouvements
+        await pool.query(`UPDATE mouvements SET produit_id=$1 WHERE produit_id=$2`, [d.keep_id, cp.id]).catch(() => {});
+        // Reassigner lots
+        await pool.query(`UPDATE lots SET produit_id=$1 WHERE produit_id=$2`, [d.keep_id, cp.id]).catch(() => {});
+        // Cumuler le stock
+        const { rows: [{ stock: addStock }] } = await pool.query(`SELECT COALESCE(stock,0) stock FROM produits WHERE id=$1`, [cp.id]);
+        await pool.query(`UPDATE produits SET stock = stock + $1 WHERE id=$2`, [Number(addStock), d.keep_id]);
+        // Supprimer la copie
+        await pool.query(`DELETE FROM produits WHERE id=$1`, [cp.id]);
+        log.push("Doublon supprimé: " + d.nom + " (id=" + cp.id + ", stock transféré)");
+      }
+    }
+    /* 2) Produits orphelins (famille_id null) → réaffecter "Boissons" ou "Alimentation" */
+    const { rows: orphanCheck } = await pool.query(
+      `SELECT id, nom FROM produits WHERE famille_id IS NULL`);
+    if (orphanCheck.length > 0) {
+      // Chercher ou créer une famille par défaut
+      let defFamille;
+      const { rows: boissons } = await pool.query(`SELECT id FROM familles WHERE nom ILIKE '%boisson%' AND actif=true LIMIT 1`);
+      if (boissons.length) { defFamille = boissons[0].id; }
+      else {
+        const { rows: alim } = await pool.query(`SELECT id FROM familles WHERE nom ILIKE '%aliment%' AND actif=true LIMIT 1`);
+        if (alim.length) { defFamille = alim[0].id; }
+        else {
+          const { rows: firstFam } = await pool.query(`SELECT id FROM familles WHERE actif=true ORDER BY id LIMIT 1`);
+          defFamille = firstFam.length ? firstFam[0].id : 1;
+        }
+      }
+      for (const p of orphanCheck) {
+        await pool.query(`UPDATE produits SET famille_id=$1 WHERE id=$2`, [defFamille, p.id]);
+        log.push("Orphelin réaffecté: " + p.nom + " → famille_id=" + defFamille);
+      }
+    }
+    /* 3) Produits test (nom commençant par TEST, inactifs jamais vendus) → supprimer */
+    const { rows: testProds } = await pool.query(
+      `SELECT p.id, p.nom FROM produits p LEFT JOIN vente_items vi ON vi.produit_id=p.id
+       WHERE (p.nom ILIKE 'TEST%' OR p.nom ILIKE 'test-%') AND vi.id IS NULL AND p.actif=false`);
+    for (const tp of testProds) {
+      await pool.query(`DELETE FROM produits WHERE id=$1`, [tp.id]);
+      log.push("Produit test supprimé: " + tp.nom);
+    }
+    /* 4) Clients doublons (même nom) → garder le plus ancien, transférer ventes */
+    const { rows: clientDupes } = await pool.query(
+      `SELECT nom, COUNT(*) c, MIN(id) keep_id FROM clients GROUP BY nom HAVING COUNT(*)>1`);
+    for (const cd of clientDupes) {
+      const { rows: copies } = await pool.query(
+        `SELECT id FROM clients WHERE nom=$1 AND id!=$2 ORDER BY id`, [cd.nom, cd.keep_id]);
+      for (const cp of copies) {
+        await pool.query(`UPDATE ventes SET client_id=$1 WHERE client_id=$2`, [cd.keep_id, cp.id]);
+        await pool.query(`UPDATE credits SET client_id=$1 WHERE client_id=$2`, [cd.keep_id, cp.id]).catch(() => {});
+        await pool.query(`DELETE FROM clients WHERE id=$1`, [cp.id]);
+        log.push("Client doublon supprimé: " + cd.nom + " (id=" + cp.id + ")");
+      }
+    }
+    /* 5) Familles vides (sans produit actif) et inactives → supprimer */
+    const { rows: emptyFam } = await pool.query(
+      `SELECT f.id, f.nom FROM familles f
+       LEFT JOIN produits p ON p.famille_id=f.id AND p.actif=true
+       WHERE p.id IS NULL AND f.actif=false`);
+    for (const ef of emptyFam) {
+      await pool.query(`DELETE FROM familles WHERE id=$1`, [ef.id]);
+      log.push("Famille inactive vide supprimée: " + ef.nom);
+    }
+    if (log.length) console.log("🧹 Nettoyage auto: " + log.length + " action(s):", log.join(" | "));
+    else console.log("🧹 Nettoyage auto: aucune donnée de test trouvée");
+  } catch (e) { console.error("⚠️ Nettoyage auto error:", e.message); }
+}
+
 process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);
 });
@@ -2133,6 +2283,6 @@ async function detectCaps() {
       console.log("✅ Colonnes critiques présentes (clôture de caisse, versements, dépenses)");
   } catch (e) { }
 }
-initSchema().then(() => detectCaps()).then(() => autoSeed()).then(() => {
+initSchema().then(() => detectCaps()).then(() => autoSeed()).then(() => cleanupTestData()).then(() => {
   server.listen(PORT, () => console.log("✅ Backend Gestion Stock & Vente sur http://localhost:" + PORT + " (WebSocket: /ws)"));
 });
