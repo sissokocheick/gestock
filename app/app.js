@@ -2630,6 +2630,11 @@ renderers.point = async function () {
       <div id="pointClassBox"></div>
     </div>` : `
     <div class="point-card">
+      <div class="row wrap" style="margin-bottom:8px;gap:8px;justify-content:flex-end">
+        <button class="btn primary" id="pointPrint">🖨️ Imprimer</button>
+        <button class="btn success" id="pointWhatsapp">📲 WhatsApp</button>
+        <button class="btn ghost" id="pointCsv">⬇️ CSV</button>
+      </div>
       ${tab.length > 0 ? pgBar("point", tab.length, "caisse(s)") : ""}
       <div class="table-wrap"><table>
         <tr><th class="sticky-l">Caissière</th><th>Ouverture</th><th class="num">Ventes</th><th class="num">Espèces attendu</th><th class="num">Compté</th><th class="num">Écart</th><th class="sticky-r">Actions</th></tr>
@@ -2644,15 +2649,13 @@ renderers.point = async function () {
             <button class="btn small" data-detail="${c.id}">👁️</button>
             ${c.statut === "ouverte" ? `<button class="btn small" data-vers="${c.id}">➕</button>` : ""}
             ${c.statut === "fermee" ? `<button class="btn small success" data-val="${c.id}">✅</button><button class="btn small danger" data-rejet="${c.id}">🚫</button>` : ""}
+            <button class="btn small" data-print-c="${c.id}" title="Imprimer">🖨️</button>
+            <button class="btn small" data-wa-c="${c.id}" title="WhatsApp">📲</button>
+            <button class="btn small" data-csv-c="${c.id}" title="CSV">⬇️</button>
           </div></td>
         </tr>`).join("")}
         <tr style="font-weight:800;background:var(--bg2)"><td class="sticky-l">Total (${tab.length})</td><td></td><td class="num">${money(tab.reduce((s,c)=>s+Number(c.total),0))}</td><td class="num">${money(tAttendu)}</td><td class="num">${money(tCompte)}</td><td class="num ${hasEcart ? "bad" : "ok"}">${tEcart >= 0 ? "+" : ""}${money(tEcart)}</td><td class="sticky-r"></td></tr>
       </table></div>
-      <div class="row wrap" style="margin-top:10px;gap:8px;justify-content:flex-end">
-        <button class="btn primary" id="pointPrint">🖨️ Imprimer</button>
-        <button class="btn success" id="pointWhatsapp">📲 WhatsApp</button>
-        <button class="btn ghost" id="pointCsv">⬇️ CSV</button>
-      </div>
     </div>`}`;
   $("#ptFilter").addEventListener("click", () => {
     pointFrom = $("#ptFrom").value || todayKey();
@@ -2690,6 +2693,52 @@ renderers.point = async function () {
     askConfirm("Rejeter le point", `Rejeter le point de <b>${esc(c.user_nom)}</b> ?<br><span class="muted">La caissière pourra aller voir sa caisse du jour (Ma journée) pour vérifier. Ses nouvelles ventes s'y ajouteront.</span>`, async () => {
       try { await api(`/caisse/${c.id}/rouvrir`, { method: "PUT" }); toast("Point rejeté - la caissière peut vérifier dans Ma journée"); renderers.point().catch(() => { }); } catch (e) { toast(e.message); }
     }, { okLabel: "Rejeter le point", danger: true });
+  }));
+  /* --- Actions individuelles par caisse --- */
+  $$("#pointBox [data-print-c]").forEach(b => b.addEventListener("click", async () => {
+    const c = caisses.find(x => String(x.id) === String(b.dataset.printC));
+    if (!c) return;
+    let info = null;
+    try { info = await api("/caisse/" + c.id); } catch (e) { toast(e.message); return; }
+    const nT = (info.ventes || []).length;
+    const h = c.fermee_le ? new Date(c.fermee_le).toLocaleString("fr-FR") : new Date(c.ouverte_le).toLocaleString("fr-FR");
+    const o = new Date(c.ouverte_le).toLocaleString("fr-FR");
+    const att = c.statut === "ouverte" ? c.attendu_especes : c.total_attendu || 0;
+    let txt = "CLÔTURE DE CAISSE\n" + h + "\n";
+    txt += "Caissiere : " + c.user_nom + "\n";
+    txt += "Ouverte : " + o;
+    if (c.fermee_le) txt += "\nFermee : " + h;
+    txt += "\nFonds : " + money(c.fonds_initial);
+    txt += "\nVentes : " + money(c.total) + " - " + nT + " tickets";
+    txt += "\nEspieces attendues : " + money(att);
+    if (c.total_compte != null) txt += "\nMontant compte : " + money(c.total_compte) + "\nEcart : " + (Number(c.ecart) > 0 ? "+" : "") + money(c.ecart);
+    if (c.notes) txt += "\n" + c.notes;
+    imprimer("Recu caisse - " + c.user_nom, `<pre style="font-family:'Courier New',monospace">` + txt.replace(/\n/g, "<br>") + `</pre>`, "80mm");
+  }));
+  $$("#pointBox [data-wa-c]").forEach(b => b.addEventListener("click", async () => {
+    const c = caisses.find(x => String(x.id) === String(b.dataset.waC));
+    if (!c) return;
+    let info = null;
+    try { info = await api("/caisse/" + c.id); } catch (e) { toast(e.message); return; }
+    const nT = (info.ventes || []).length;
+    const ecartStr = c.ecart != null ? (Number(c.ecart) > 0 ? "+" : "") + money(c.ecart) : "-";
+    const txt = `_*Clôture de caisse*_\n` +
+      `Caissière : ${esc(c.user_nom)}\n` +
+      `Ouverte : ${new Date(c.ouverte_le).toLocaleString("fr-FR")}\n` +
+      (c.fermee_le ? `Fermée : ${new Date(c.fermee_le).toLocaleString("fr-FR")}\n` : "") +
+      `Fonds : ${money(c.fonds_initial)}\n` +
+      `Ventes : ${money(c.total)} (${nT} tickets)\n` +
+      `Espèces attendues : ${money(c.statut === "ouverte" ? c.attendu_especes : c.total_attendu || 0)}\n` +
+      (c.total_compte != null ? `Compté : ${money(c.total_compte)}\nÉcart : ${ecartStr}\n` : "") +
+      (c.notes ? `Notes : ${esc(c.notes)}\n` : "");
+    window.open(`https://wa.me/?text=${encodeURIComponent(txt)}`, "_blank");
+  }));
+  $$("#pointBox [data-csv-c]").forEach(b => b.addEventListener("click", () => {
+    const c = caisses.find(x => String(x.id) === String(b.dataset.csvC));
+    if (!c) return;
+    const lines = [["Caissière", "Ouverture", "Statut", "Ventes", "Espèces attendu", "Compté", "Écart"]];
+    lines.push([c.user_nom, new Date(c.ouverte_le).toLocaleString("fr-FR"), c.statut, c.total, c.statut === "ouverte" ? c.attendu_especes : c.total_attendu || 0, c.total_compte != null ? c.total_compte : "", c.ecart != null ? c.ecart : ""]);
+    downloadCsv("caisse-" + c.user_nom.replace(/\s+/g, "-") + "-" + pointFrom + ".csv", lines);
   }));
   }
   if (pointTab === "classement") renderPointClass().catch(() => { });
