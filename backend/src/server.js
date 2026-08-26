@@ -2236,32 +2236,27 @@ async function autoSeed() {
 async function cleanupTestData() {
   const log = [];
   try {
-    /* 1) Produits doublons → garder le plus ancien, transférer ventes/lots, supprimer les copies */
-    const { rows: dupes } = await pool.query(
-      `SELECT nom, COUNT(*) c, MIN(id) keep_id FROM produits GROUP BY nom HAVING COUNT(*)>1`);
-    for (const d of dupes) {
-      const { rows: copies } = await pool.query(
-        `SELECT id FROM produits WHERE nom=$1 AND id!=$2 ORDER BY id`, [d.nom, d.keep_id]);
-      for (const cp of copies) {
-        // Reassigner ventes_items vers le produit gardé
-        await pool.query(`UPDATE vente_items SET produit_id=$1 WHERE produit_id=$2`, [d.keep_id, cp.id]);
-        // Reassigner mouvements
-        await pool.query(`UPDATE mouvements SET produit_id=$1 WHERE produit_id=$2`, [d.keep_id, cp.id]).catch(() => {});
-        // Reassigner lots
-        await pool.query(`UPDATE lots SET produit_id=$1 WHERE produit_id=$2`, [d.keep_id, cp.id]).catch(() => {});
-        // Cumuler le stock
-        const { rows: [{ stock: addStock }] } = await pool.query(`SELECT COALESCE(stock,0) stock FROM produits WHERE id=$1`, [cp.id]);
-        await pool.query(`UPDATE produits SET stock = stock + $1 WHERE id=$2`, [Number(addStock), d.keep_id]);
-        // Supprimer la copie
-        await pool.query(`DELETE FROM produits WHERE id=$1`, [cp.id]);
-        log.push("Doublon supprimé: " + d.nom + " (id=" + cp.id + ", stock transféré)");
-      }
+    /* 1) Produits avec codes de test (BAR-*, PROD-*, PRODUIT-*) → supprimer */
+    const { rows: testCodes } = await pool.query(
+      `SELECT id, nom, code FROM produits WHERE code LIKE 'BAR-%' OR code LIKE 'PROD-%' OR code LIKE 'PRODUIT-%' LIMIT 500`);
+    for (const tp of testCodes) {
+      // Reassigner d'abord les ventes/lots/mouvements vers NULL (pas de produit cible)
+      await pool.query(`UPDATE vente_items SET produit_id=NULL WHERE produit_id=$1`, [tp.id]).catch(() => {});
+      await pool.query(`DELETE FROM produits WHERE id=$1`, [tp.id]);
+      log.push("Produit test supprimé: " + tp.nom + " (" + tp.code + ")");
     }
-    /* 2) Produits orphelins (famille_id null) → réaffecter "Boissons" ou "Alimentation" */
+    /* 2) Produits test (nom commençant par TEST, inactifs jamais vendus) → supprimer */
+    const { rows: testProds } = await pool.query(
+      `SELECT p.id, p.nom FROM produits p LEFT JOIN vente_items vi ON vi.produit_id=p.id
+       WHERE (p.nom ILIKE 'TEST%' OR p.nom ILIKE 'test-%') AND vi.id IS NULL AND p.actif=false`);
+    for (const tp of testProds) {
+      await pool.query(`DELETE FROM produits WHERE id=$1`, [tp.id]);
+      log.push("Produit test supprimé: " + tp.nom);
+    }
+    /* 3) Produits orphelins (famille_id null) → réaffecter "Boissons" ou "Alimentation" */
     const { rows: orphanCheck } = await pool.query(
       `SELECT id, nom FROM produits WHERE famille_id IS NULL`);
     if (orphanCheck.length > 0) {
-      // Chercher ou créer une famille par défaut
       let defFamille;
       const { rows: boissons } = await pool.query(`SELECT id FROM familles WHERE nom ILIKE '%boisson%' AND actif=true LIMIT 1`);
       if (boissons.length) { defFamille = boissons[0].id; }
@@ -2278,28 +2273,7 @@ async function cleanupTestData() {
         log.push("Orphelin réaffecté: " + p.nom + " → famille_id=" + defFamille);
       }
     }
-    /* 3) Produits test (nom commençant par TEST, inactifs jamais vendus) → supprimer */
-    const { rows: testProds } = await pool.query(
-      `SELECT p.id, p.nom FROM produits p LEFT JOIN vente_items vi ON vi.produit_id=p.id
-       WHERE (p.nom ILIKE 'TEST%' OR p.nom ILIKE 'test-%') AND vi.id IS NULL AND p.actif=false`);
-    for (const tp of testProds) {
-      await pool.query(`DELETE FROM produits WHERE id=$1`, [tp.id]);
-      log.push("Produit test supprimé: " + tp.nom);
-    }
-    /* 4) Clients doublons (même nom) → garder le plus ancien, transférer ventes */
-    const { rows: clientDupes } = await pool.query(
-      `SELECT nom, COUNT(*) c, MIN(id) keep_id FROM clients GROUP BY nom HAVING COUNT(*)>1`);
-    for (const cd of clientDupes) {
-      const { rows: copies } = await pool.query(
-        `SELECT id FROM clients WHERE nom=$1 AND id!=$2 ORDER BY id`, [cd.nom, cd.keep_id]);
-      for (const cp of copies) {
-        await pool.query(`UPDATE ventes SET client_id=$1 WHERE client_id=$2`, [cd.keep_id, cp.id]);
-        await pool.query(`UPDATE credits SET client_id=$1 WHERE client_id=$2`, [cd.keep_id, cp.id]).catch(() => {});
-        await pool.query(`DELETE FROM clients WHERE id=$1`, [cp.id]);
-        log.push("Client doublon supprimé: " + cd.nom + " (id=" + cp.id + ")");
-      }
-    }
-    /* 5) Familles vides (sans produit actif) et inactives → supprimer */
+    /* 4) Familles vides (sans produit actif) et inactives → supprimer */
     const { rows: emptyFam } = await pool.query(
       `SELECT f.id, f.nom FROM familles f
        LEFT JOIN produits p ON p.famille_id=f.id AND p.actif=true
