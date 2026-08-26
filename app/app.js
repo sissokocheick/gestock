@@ -3483,12 +3483,12 @@ renderers.params = async function () {
   const b = DB.boutique || {};
   $("#paramsBox").innerHTML = `
     <div class="tabs" style="margin-bottom:10px">
-      <button class="tab on" data-ptab="id">🏪 Identité de la boutique</button>
+      <button class="tab" data-ptab="backups">💾 Sauvegardes</button>
+      <button class="tab" data-ptab="id">🏪 Identité de la boutique</button>
       <button class="tab" data-ptab="modes">💳 Modes de paiement</button>
       <button class="tab" data-ptab="ticket">🧾 Aperçu du ticket</button>
-      <button class="tab" data-ptab="backups">💾 Sauvegardes</button>
     </div>
-    <div id="ptPaneId">
+    <div id="ptPaneId" style="display:none">
       <div class="panel" style="margin-bottom:10px">
         <h3>🏪 Identité de la boutique (apparaît sur les tickets et documents)</h3>
         <div class="row"><label class="field grow">Nom de la boutique <input id="bpNom" data-fmt="name" value="${esc(b.nom || "")}"></label>
@@ -3538,7 +3538,7 @@ renderers.params = async function () {
         </div>
       </div>
     </div>
-    <div id="ptPaneBackups" style="display:none">
+    <div id="ptPaneBackups">
       <div class="panel">
         <div class="row" style="align-items:center;margin-bottom:6px">
           <h3 class="grow" style="margin:0">💾 Sauvegardes automatiques</h3>
