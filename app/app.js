@@ -146,7 +146,7 @@ async function api(path, opts = {}) {
     throw new Error("Serveur injoignable (" + API_BASE + ") - démarrez le backend");
   }
   const data = await res.json().catch(() => ({}));
-  if (res.ok && (!opts.method || opts.method === "GET")) sessionStorage.setItem("gs_cache_" + path, JSON.stringify(data));
+  if (res.ok && (!opts.method || opts.method === "GET") && !path.includes("backup") && !path.includes("restore")) sessionStorage.setItem("gs_cache_" + path, JSON.stringify(data));
   if (res.status === 401) {
     if (!path.startsWith("/auth/login")) doLogout();
     throw new Error(data.error || "Session expirée, reconnectez-vous");
