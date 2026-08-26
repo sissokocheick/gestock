@@ -317,7 +317,7 @@ async function showApp() {
     DB.modes = await api("/modes-paiement");
     DB.droits = await api("/droits");
     DB.params = await api("/parametres");
-    try { DB.clients = await api("/clients"); } catch (e) {}
+    try { const clData = await api("/clients?limit=200"); DB.clients = Array.isArray(clData) ? clData : (clData.rows || []); } catch (e) {}
   } catch (e) { toast(e.message); }
   // Re-affiche le nom avec le libellé du rôle (chargé juste au-dessus)
   $("#curUser").textContent = `${cur.nom} - ${roleLabel(cur.role)}`;
@@ -403,7 +403,8 @@ const renderers = {};
 /* ---------- accueil ---------- */
 renderers.accueil = async function () {
   const k = todayKey();
-  const [vts, prods] = await Promise.all([api("/ventes?date=" + k), api("/produits")]);
+  const [vts, prodsPage] = await Promise.all([api("/ventes?date=" + k), api("/produits?page=0&limit=100")]);
+  const prods = Array.isArray(prodsPage) ? prodsPage : (prodsPage.rows || []);
   DB.produits = prods;
   let caY = 0, benY = 0, ticketsY = 0;
   try { const yk = todayKey(new Date(Date.now() - 86400000)); const vy = await api("/ventes?date=" + yk); caY = vy.reduce((s, v) => s + Number(v.net), 0); benY = vy.reduce((s, v) => s + Number(v.benefice || 0), 0); ticketsY = vy.length; } catch (e) { }
@@ -515,14 +516,24 @@ renderers.accueil = async function () {
 
 /* ---------- vente ---------- */
 let venteFilter = "";
+let venteSearchTimer = null;
+async function loadVenteProducts(search, famille) {
+  /* 20 produits par defaut (grid rapide), 50 si recherche/filtre */
+  const limit = (search || famille) ? 50 : 20;
+  let url = "/produits?limit=" + limit;
+  if (search) url += "&search=" + encodeURIComponent(search);
+  if (famille) url += "&famille=" + encodeURIComponent(famille);
+  const data = await api(url);
+  DB.produits = Array.isArray(data) ? data : (data.rows || data);
+  return DB.produits;
+}
 renderers.vente = async function () {
   try {
     const [prods, clts, caisse] = await Promise.all([
-      api("/produits"),
-      api("/clients").catch(() => []),
+      loadVenteProducts("", ""),
+      api("/clients?limit=200").then(d => Array.isArray(d) ? d : (d.rows || d)).catch(() => []),
       api("/caisse/moi").catch(() => null)
     ]);
-    DB.produits = prods;
     DB.clients = clts;
     DB.caisse = caisse;
   } catch (e) { toast(e.message); return; }
@@ -718,7 +729,8 @@ function renderVenteGrid() {
   if (sort === "prix") list = [...list].sort((a, b) => Number(a.prix_vente) - Number(b.prix_vente));
   else if (sort === "prixDesc") list = [...list].sort((a, b) => Number(b.prix_vente) - Number(a.prix_vente));
   else list = [...list].sort((a, b) => a.nom.localeCompare(b.nom, "fr"));
-  $("#venteGrid").innerHTML = (!f ? recentsHTML() : "") + (list.length === 0
+  const hint = (!f && DB.produits.length >= 20) ? `<div class="empty" style="padding:8px;font-size:12px;color:var(--muted)">🔍 Tapez le nom ou code-barres pour chercher dans les 100 000+ produits</div>` : "";
+  $("#venteGrid").innerHTML = (!f ? recentsHTML() : "") + hint + (list.length === 0
     ? `<div class="empty">Aucun produit trouvé</div>`
     : list.map(p => `
       <div class="prod-card ${Number(p.stock) <= 0 ? "off" : ""}" data-pid="${p.id}">
@@ -735,6 +747,17 @@ function renderVenteGrid() {
     const p = produitById(b.dataset.pid);
     if (p && Number(p.stock) > 0) { addToCart(p.id, 1); } else toast("Stock insuffisant");
   }));
+}
+/* Recherche serveur pour la caisse (debounce) */
+function venteServerSearch(query) {
+  clearTimeout(venteSearchTimer);
+  venteSearchTimer = setTimeout(async () => {
+    const fam = $("#venteFamille") ? $("#venteFamille").value : "";
+    try {
+      await loadVenteProducts(query, fam);
+      renderVenteGrid();
+    } catch (e) { }
+  }, 300);
 }
 /* --- Assistant audio & monnaie --- */
 function playBeep(success = true) {
@@ -886,9 +909,9 @@ function populateCartClients() {
   const clientSel = $("#cartClientSel");
   if (!clientSel) return;
   const curCid = clientSel.value;
-  const clients = DB.clients || [];
+  const clients = (DB.clients || []).filter(c => c.actif).slice(0, 200);
   clientSel.innerHTML = '<option value="">👤 Client passager (Comptoir)</option>' +
-    clients.filter(c => c.actif).map(c => `
+    clients.map(c => `
       <option value="${c.id}" ${String(c.id) === String(curCid) ? "selected" : ""}>
         ${esc(c.nom)} (⭐ ${c.points || 0} pts)
       </option>
@@ -1572,35 +1595,68 @@ function renderProdTable(shown) {
   return h;
 }
 renderers.produits = async function () {
-  let list = [];
-  try {
-    const [prods, fams] = await Promise.all([api("/produits"), api("/familles")]);
-    DB.produits = prods; DB.familles = fams;
-    list = prods;
-  } catch (e) { toast(e.message); return; }
   const sel = $("#prodFamilleFilter");
-  const fams = DB.familles;
-  sel.innerHTML = `<option value="">Toutes les familles</option>` + fams.map(f => `<option ${sel.value === f.nom ? "selected" : ""}>${esc(f.nom)}</option>`).join("");
-  const f = $("#prodSearch").value.toLowerCase();
-  const shown = list.filter(p => (!prodMasqInactifs || p.actif) && (!sel.value || p.famille === sel.value) && (!f || p.nom.toLowerCase().includes(f) || (p.code || "").includes(f)));
+  const fSearch = $("#prodSearch").value || "";
+  const fam = sel ? sel.value : "";
+  const pg = pgGet("produits");
+  let list = [], totalCount = 0;
+  try {
+    const [prodsData, fams] = await Promise.all([
+      api(`/produits?page=${pg.page}&limit=${pg.size}` + (fSearch ? `&search=${encodeURIComponent(fSearch)}` : "") + (fam ? `&famille=${encodeURIComponent(fam)}` : "")),
+      api("/familles")
+    ]);
+    if (Array.isArray(prodsData)) { list = prodsData; totalCount = prodsData.length; }
+    else { list = prodsData.rows || []; totalCount = prodsData.total || list.length; }
+    DB.produits = list; DB.familles = fams;
+  } catch (e) { toast(e.message); return; }
+  if (sel && !sel.options.length) {
+    sel.innerHTML = `<option value="">Toutes les familles</option>` + (DB.familles||[]).map(f => `<option ${sel.value === f.nom ? "selected" : ""}>${esc(f.nom)}</option>`).join("");
+  }
   const viewMode = localStorage.getItem("gs_prodView") || "list";
   const isGrid = viewMode === "grid";
-  if (shown.length === 0) {
-    $("#prodWrap").innerHTML = '<div class="empty">' + (prodMasqInactifs ? 'Aucun produit actif - décochez "Masquer inactifs" pour tout voir' : 'Aucun produit') + '</div>';
+  if (list.length === 0) {
+    $("#prodWrap").innerHTML = '<div class="empty">' + (prodMasqInactifs ? 'Aucun produit actif' : 'Aucun produit trouvé') + '</div>';
   } else if (isGrid) {
-    $("#prodWrap").innerHTML = renderProdGrid(shown);
+    $("#prodWrap").innerHTML = renderProdGrid(list);
   } else {
-    $("#prodWrap").innerHTML = renderProdTable(shown);
+    $("#prodWrap").innerHTML = renderProdTable(list);
   }
+  // Pagination bar
+  const pgBox = $("#prodPg");
+  if (pgBox) pgBox.innerHTML = pgBar("produits", totalCount, "produit(s)");
   $$("#prodWrap [data-edit]").forEach(b => b.addEventListener("click", () => prodForm(produitById(b.dataset.edit))));
-  $$("#prodWrap [data-label]").forEach(b => b.addEventListener("click", () => {
+  $$("#prodWrap [data-label]").forEach(b => b.addEventListener("click", async () => {
     const p = produitById(b.dataset.label);
-    const svg = barcodeSVG(p.code);
-    imprimer("Étiquette " + p.nom, `<div style="font-family:'Courier New',monospace;text-align:center;padding:8px">
-      <b>${esc((DB.boutique || {}).nom || "")}</b><br><span style="font-size:18px">${esc(p.nom)}</span><br>
-      <span style="font-size:24px;font-weight:800">${money(p.prix_vente)}</span><br>
-      ${svg ? `<div style="margin:8px auto;width:fit-content">${svg}</div>` : `<span style="letter-spacing:3px;font-size:14px">${esc(p.code || "")}</span>`}
-    </div>`, "80mm");
+    if (!p) return;
+    /* Charger JsBarcode si nécessaire */
+    if (typeof JsBarcode === "undefined") {
+      try { await ensureScript("/js/JsBarcode.min.js?v=16"); } catch(e) { toast("Impossible de charger JsBarcode"); return; }
+    }
+    const code = p.code || p.reference || String(p.id);
+    const fam = p.famille || "";
+    const boutNom = esc((DB.boutique || {}).nom || "");
+    const boutTel = esc((DB.boutique || {}).tel || "");
+    /* Générer le SVG du code-barres AVANT l'impression */
+    let barcodeHtml = "";
+    try {
+      const tmpDiv = document.createElement("div");
+      tmpDiv.style.position = "absolute"; tmpDiv.style.left = "-9999px";
+      document.body.appendChild(tmpDiv);
+      JsBarcode(tmpDiv, String(code), { format: "CODE128", width: 2, height: 50, displayValue: true, fontSize: 12, margin: 2, textMargin: 2 });
+      barcodeHtml = tmpDiv.innerHTML;
+      tmpDiv.remove();
+    } catch(e) { barcodeHtml = `<span style="letter-spacing:3px;font-size:14px">${esc(code)}</span>`; }
+    const corps = `
+      <div style="font-family:Arial,sans-serif;text-align:center;padding:6px;max-width:70mm">
+        <div style="font-size:10px;color:#555;margin-bottom:2px">${boutNom}</div>
+        <div style="font-size:14px;font-weight:700;margin:4px 0">${esc(p.nom)}</div>
+        ${fam ? `<div style="font-size:9px;color:#777;margin-bottom:4px">${esc(fam)}</div>` : ""}
+        <div style="font-size:22px;font-weight:900;color:#111;margin:6px 0">${money(p.prix_vente)}</div>
+        <div style="margin:6px auto;width:fit-content">${barcodeHtml}</div>
+        <div style="font-size:8px;color:#999;margin-top:2px">Réf: ${esc(code)}</div>
+        ${boutTel ? `<div style="font-size:8px;color:#999;margin-top:1px">${boutTel}</div>` : ""}
+      </div>`;
+    imprimer("Étiquette " + p.nom, corps, "A6");
   }));
 };
 function prodForm(p) {
@@ -1737,11 +1793,24 @@ function prodForm(p) {
 /* ---------- stock ---------- */
 let stockFaible = false, stockInactifs = false, mvtF = { type: "", produit: "", from: "", to: "" }, stTab = "produits";
 renderers.stock = async function () {
-  let prods = [];
-  try { [prods, DB.typesMv] = await Promise.all([api("/produits"), api("/types-mouvement")]); DB.produits = prods; } catch (e) { toast(e.message); return; }
+  const pg = pgGet("stock_prods");
+  let prodsData = [], totalCount = 0;
+  try {
+    const r = await api(`/produits?page=${pg.page}&limit=${pg.size}`);
+    if (Array.isArray(r)) { prodsData = r; totalCount = r.length; }
+    else { prodsData = r.rows || []; totalCount = r.total || prodsData.length; }
+    DB.produits = prodsData;
+    DB.typesMv = await api("/types-mouvement");
+  } catch (e) { toast(e.message); return; }
   let lots = [], four = [], cmds = [];
   if (hasRight("R_STOCK")) {
-    try { [lots, four, cmds] = await Promise.all([api("/lots"), api("/fournisseurs"), api("/commandes")]); } catch (e) { }
+    try {
+      const fourData = await api("/fournisseurs?limit=200").catch(()=>[]);
+      four = Array.isArray(fourData) ? fourData : (fourData.rows || []);
+      const lotsData = await api("/lots?limit=100").catch(()=>({rows:[]}))
+      lots = Array.isArray(lotsData) ? lotsData : (lotsData.rows || []);
+      cmds = await api("/commandes").catch(()=>[]);
+    } catch (e) { }
   }
   DB.lots = lots; DB.fournisseurs = four; DB.commandes = cmds;
   const tabs = [["produits", "📦 Produits"], ["mouvements", "🔁 Entrées & sorties"], ["peremptions", "⏰ Péremptions"], ["acommander", "🛒 À commander"], ["fournisseurs", "👥 Fournisseurs"], ["commandes", "📋 Commandes"], ["dormant", "💤 Stock dormant"]];
@@ -1750,8 +1819,8 @@ renderers.stock = async function () {
     <div id="stBody"></div>`;
   $$("#stockWrap [data-stab]").forEach(b => b.addEventListener("click", () => { stTab = b.dataset.stab; renderers.stock().catch(() => { }); }));
   const box = $("#stBody");
-  if (stTab === "produits") renderStProduits(box, prods);
-  else if (stTab === "mouvements") renderStMouvements(box, prods);
+  if (stTab === "produits") renderStProduits(box, prodsData);
+  else if (stTab === "mouvements") renderStMouvements(box, prodsData);
   else if (stTab === "peremptions") renderStPeremptions(box, lots);
   else if (stTab === "acommander") AppStock.renderCommander(box);
   else if (stTab === "fournisseurs") renderStFournisseurs(box, four);
@@ -2833,10 +2902,15 @@ renderers.clients = async function () {
   const box = $("#clientsBox");
   if (!box) return;
   box.innerHTML = '<div class="skeleton" style="height:120px;margin-bottom:8px"></div>';
-  let list = [];
+  let list = [], totalCount = 0;
   try {
     const q = ($("#clientSearch") && $("#clientSearch").value) || "";
-    list = await api("/clients" + (q ? "?q=" + encodeURIComponent(q) : ""));
+    const pg = pgGet("clients");
+    let url = "/clients?page=" + pg.page + "&limit=" + pg.size;
+    if (q) url += "&q=" + encodeURIComponent(q);
+    const data = await api(url);
+    if (Array.isArray(data)) { list = data; totalCount = data.length; }
+    else { list = data.rows || []; totalCount = data.total || list.length; }
     DB.clients = list;
   } catch (e) { box.innerHTML = '<div class="empty">Erreur : ' + esc(e.message) + '</div>'; return; }
 
@@ -2847,7 +2921,8 @@ renderers.clients = async function () {
     return;
   }
 
-  box.innerHTML = '<p class="muted" style="margin:0 0 8px">' + list.length + ' client(s) répertorié(s)</p>'
+  box.innerHTML = '<p class="muted" style="margin:0 0 8px">' + totalCount + ' client(s) répertorié(s)</p>'
+    + pgBar("clients", totalCount, "client(s)")
     + '<div class="table-wrap"><table>'
     + '<tr><th>Nom</th><th>Téléphone</th><th>Adresse</th><th class="num">Points fidélité</th><th class="num">Crédit en cours</th><th class="num">Plafond crédit</th><th>Statut</th><th>Actions</th></tr>'
     + list.map(function(c) {
@@ -2936,7 +3011,7 @@ function clientForm(c) {
         toast("Fiche client mise à jour ✅");
       }
       closeModal();
-      try { DB.clients = await api("/clients"); } catch (e) {}
+      try { const clData2 = await api("/clients?limit=200"); DB.clients = Array.isArray(clData2) ? clData2 : (clData2.rows || []); } catch (e) {}
       if (curView === "clients") renderers.clients();
       if (curView === "vente") {
         renderCart();
@@ -3136,9 +3211,13 @@ function downloadCSV(filename, rows) {
   setTimeout(function() { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
 }
 renderers.depenses = async function () {
-  var rows = [];
-  try { rows = await api("/depenses?all=1"); } catch (e) { toast(e.message); return; }
-  DB.depenses = rows;
+  var pg = pgGet("depenses");
+  var searchVal = $("#depSearch") ? $("#depSearch").value : "";
+  try {
+    var data = await api(`/depenses?page=${pg.page}&limit=${pg.size}&all=1` + (searchVal ? `&search=${encodeURIComponent(searchVal)}` : ""));
+    if (Array.isArray(data)) { DB.depenses = data; DB.depensesTotal = data.length; }
+    else { DB.depenses = data.rows || []; DB.depensesTotal = data.total || DB.depenses.length; }
+  } catch (e) { toast(e.message); return; }
   renderDepenses();
 };
 function renderDepenses() {
@@ -3169,7 +3248,8 @@ function renderDepenses() {
     + '<input id="depSearch" class="grow" placeholder="🔎 Rechercher (motif, catégorie, mode…)" value="' + esc(f) + '" style="margin-bottom:8px">'
     + (actives.length === 0 ? '<div class="empty">Aucune dépense enregistrée</div>'
     : '<div class="row wrap" style="margin-bottom:6px;gap:4px">' + catsHTML + '</div>'
-    + '<p class="muted" style="margin:0 0 8px">Total' + (f ? ' (filtré)' : '') + ' : <b>' + money(total) + '</b> — ' + filtered.length + ' dépense(s)</p>'
+    + '<p class="muted" style="margin:0 0 8px">Total' + (f ? ' (filtré)' : '') + ' : <b>' + money(total) + '</b> — ' + (DB.depensesTotal || filtered.length) + ' dépense(s)</p>'
+    + pgBar('depenses', DB.depensesTotal || filtered.length, 'dépense(s)')
     + '<div class="table-wrap"><table><tr><th>Date</th><th>Catégorie</th><th>Motif</th><th>Mode</th><th class="num">Montant</th><th>Par</th><th></th></tr>'
     + filtered.map(function(r) { return '<tr><td>' + fmtDate(r.date) + '</td><td><span class="badge info">' + esc(r.categorie) + '</span></td>'
       + '<td>' + esc(r.motif || '') + '</td><td>' + esc(r.mode || '') + '</td>'
@@ -3200,7 +3280,7 @@ function renderDepenses() {
     });
   });
   var sBtn = $("#depSearch");
-  if (sBtn) sBtn.addEventListener("input", function() { renderDepenses(); });
+  if (sBtn) sBtn.addEventListener("input", debounce(function() { pgReset("depenses"); renderers.depenses().catch(()=>{}); }, 350));
   var eBtn = $("#depExport");
   if (eBtn) eBtn.addEventListener("click", function() {
     downloadCSV("depenses.csv", [["Date","Catégorie","Motif","Mode","Montant","Par"]].concat(filtered.map(function(r) {
@@ -4082,7 +4162,7 @@ function bind() {
   if (document.getElementById("cartRecu")) document.getElementById("cartRecu").addEventListener("focus", function() { if (Number(this.value) === 0) this.value = ""; });
   if (document.getElementById("cartRecu")) document.getElementById("cartRecu").addEventListener("blur", function() { if (!this.value) { this.value = 0; } });
   if ($("#cartRecu")) $("#cartRecu").addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); encaisser(); } });
-  $("#venteSearch").addEventListener("input", e => { venteFilter = e.target.value; renderVenteGrid(); renderSuggest(); });
+  $("#venteSearch").addEventListener("input", e => { venteFilter = e.target.value; renderVenteGrid(); renderSuggest(); venteServerSearch(e.target.value); });
   $("#venteSearch").addEventListener("keydown", e => {
     const items = $("#venteSuggest .sug-item");
     if (e.key === "ArrowDown") { e.preventDefault(); moveSuggest(items, 1); return; }
@@ -4091,7 +4171,7 @@ function bind() {
     if (e.key === "Enter" && venteFilter) { e.preventDefault(); const hl = $("#venteSuggest .sug-item.on"); if (hl && hl.dataset.pid) addSuggestion(hl.dataset.pid); else addLastMatch(); }
   });
   document.addEventListener("click", e => { if (!e.target.closest("#venteSearch") && !e.target.closest("#venteSuggest")) hideSuggest(); });
-  $("#venteFamille").addEventListener("change", renderVenteGrid);
+  $("#venteFamille").addEventListener("change", async () => { const fam = $("#venteFamille").value; try { await loadVenteProducts(venteFilter, fam); renderVenteGrid(); } catch(e){} });
   $("#venteSort").addEventListener("change", renderVenteGrid);
   $$("#view-rapports .chip-btn").forEach(b => b.addEventListener("click", () => {
     const per = b.dataset.per, d = new Date();
@@ -4145,8 +4225,8 @@ document.addEventListener("keydown", function(e) {
     }
   });
   $("#newProdBtn").addEventListener("click", () => prodForm(null));
-  $("#prodFamilleFilter").addEventListener("change", renderers.produits);
-  $("#prodSearch").addEventListener("input", renderers.produits);
+  $("#prodFamilleFilter").addEventListener("change", () => { pgReset("produits"); renderers.produits().catch(()=>{}); });
+  $("#prodSearch").addEventListener("input", debounce(() => { pgReset("produits"); renderers.produits().catch(()=>{}); }, 350));
   $("#prodMasqInactifs").addEventListener("change", e => { prodMasqInactifs = e.target.checked; renderers.produits().catch(() => { }); });
   const catTabP = $("#catTabP"), catTabF = $("#catTabF");
   const catPaneP = $("#catPaneP"), catPaneF = $("#catPaneF");
@@ -4241,7 +4321,7 @@ document.addEventListener("keydown", function(e) {
   });
 
   const clSearch = $("#clientSearch");
-  if (clSearch) clSearch.addEventListener("input", debounce(() => renderers.clients().catch(() => {})));
+  if (clSearch) clSearch.addEventListener("input", debounce(() => { pgReset("clients"); renderers.clients().catch(() => {}); }));
 
   const cartClSel = $("#cartClientSel");
   if (cartClSel) cartClSel.addEventListener("change", updateCartClientInfo);
@@ -4268,7 +4348,7 @@ async function init() {
   if (token) {
     try { DB.params = await api("/parametres"); } catch (e) { }
   }
-  $("#loginHint").innerHTML = `Connecté à : <b>${esc(API_BASE)}</b>` + (getParam("show_demo") === "1" ? `<br>Comptes de démonstration : <b>admin</b> / admin123 · <b>Awa Diop</b> / pc123 · <b>Fatou Ndiaye</b> / caisse123` : "");
+  $("#loginHint").innerHTML = `Connecté à : <b>${esc(API_BASE)}</b>`;
   bind();
   if (token) {
     // restoreSession valide le token et appelle showApp() si valide
@@ -4279,9 +4359,9 @@ async function init() {
 }
 function ensureGlobalData() {
   const jobs = [];
-  if (!DB.produits || !DB.produits.length) jobs.push(api("/produits").then(p => DB.produits = p).catch(() => {}));
+  if (!DB.produits || !DB.produits.length) jobs.push(api("/produits?page=0&limit=200").then(p => DB.produits = Array.isArray(p) ? p : (p.rows || [])).catch(() => {}));
   if (!DB.familles || !DB.familles.length) jobs.push(api("/familles").then(f => DB.familles = f).catch(() => {}));
-  if (!DB.fournisseurs || !DB.fournisseurs.length) jobs.push(api("/fournisseurs").then(f => DB.fournisseurs = f).catch(() => {}));
+  if (!DB.fournisseurs || !DB.fournisseurs.length) jobs.push(api("/fournisseurs?limit=100").then(f => DB.fournisseurs = Array.isArray(f) ? f : (f.rows || [])).catch(() => {}));
   return Promise.all(jobs);
 }
 function renderGlobal(q) {

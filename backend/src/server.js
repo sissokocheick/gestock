@@ -274,7 +274,7 @@ app.get("/api/parametres", auth, async (req, res) => {
   res.json(rows);
 });
 app.put("/api/parametres", auth, need("R_PARAMS"), async (req, res) => {
-  const keys = ["ticket_width", "ticket_barcode", "show_demo", "remise_max_pct", "versement_validateur", "annulation_validateur", "valeur_point", "tva_pct"];
+  const keys = ["ticket_width", "ticket_barcode", "remise_max_pct", "versement_validateur", "annulation_validateur", "valeur_point", "tva_pct"];
   for (const k of keys) {
     if (req.body[k] !== undefined) {
       await pool.query("INSERT INTO parametres(cle, valeur) VALUES($1,$2) ON CONFLICT (cle) DO UPDATE SET valeur=EXCLUDED.valeur",
@@ -672,10 +672,32 @@ app.post("/api/ventes", auth, need("R_VENTE"), async (req, res) => {
 });
 app.get("/api/ventes", auth, async (req, res) => {
   const date = req.query.date;
+  const caissiere = req.query.caissiere || null;
+  const hasPage = req.query.page !== undefined || req.query.limit !== undefined;
+  const page = Math.max(0, Number(req.query.page) || 0);
+  const limit = Math.min(Math.max(1, Number(req.query.limit) || 100), 1000);
+  const baseWhere = `WHERE ($1::date IS NULL OR v.date::date = $1) AND ($2::bigint IS NULL OR v.user_id = $2)`;
+  const baseParams = [date || null, caissiere];
+  if (hasPage) {
+    const { rows: [{ total }] } = await pool.query(`SELECT COUNT(*)::int AS total FROM ventes v ${baseWhere}`, baseParams);
+    const dataParams = [...baseParams, limit, page * limit];
+    const { rows } = await pool.query(
+      `SELECT v.*, u.nom AS user_nom FROM ventes v JOIN users u ON u.id = v.user_id
+       ${baseWhere} ORDER BY v.date DESC LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}`, dataParams);
+    if (rows.length) {
+      const ids = rows.map(v => v.id);
+      const { rows: items } = await pool.query("SELECT * FROM vente_items WHERE vente_id = ANY($1::bigint[]) ORDER BY id", [ids]);
+      const m = {}; items.forEach(i => { (m[i.vente_id] = m[i.vente_id] || []).push(i); });
+      rows.forEach(v => {
+        v.items = m[v.id] || [];
+        v.benefice = v.items.reduce((s, i) => s + (Number(i.prix) - Number(i.prix_achat)) * Number(i.qte), 0) - Number(v.remise || 0);
+      });
+    }
+    return res.json({ rows, total, page, limit });
+  }
   const { rows } = await pool.query(
     `SELECT v.*, u.nom AS user_nom FROM ventes v JOIN users u ON u.id = v.user_id
-     WHERE ($1::date IS NULL OR v.date::date = $1) AND ($2::bigint IS NULL OR v.user_id = $2)
-     ORDER BY v.date DESC`, [date || null, req.query.caissiere || null]);
+     ${baseWhere} ORDER BY v.date DESC`, baseParams);
   if (rows.length) {
     const ids = rows.map(v => v.id);
     const { rows: items } = await pool.query("SELECT * FROM vente_items WHERE vente_id = ANY($1::bigint[]) ORDER BY id", [ids]);
@@ -909,34 +931,45 @@ app.get("/api/clients", auth, async (req, res) => {
   const hasPage = req.query.page !== undefined || req.query.limit !== undefined;
   const page = Math.max(0, Number(req.query.page) || 0);
   const limit = Math.min(Math.max(1, Number(req.query.limit) || 500), 2000);
+  const baseQ = `FROM clients c WHERE c.actif=true AND (c.nom ILIKE $1 OR c.tel ILIKE $1 OR c.adresse ILIKE $1)`;
   if (hasPage) {
-    const countQ = await pool.query(
-      `SELECT COUNT(*)::int AS total FROM clients c WHERE (c.nom ILIKE $1 OR c.tel ILIKE $1 OR c.adresse ILIKE $1)`, [q]);
+    const countQ = await pool.query(`SELECT COUNT(*)::int AS total ${baseQ}`, [q]);
     const total = countQ.rows[0].total;
-    const { rows } = await pool.query(`
-      SELECT c.*,
-        COALESCE((
-          SELECT SUM(v.net - COALESCE((SELECT SUM(rc.montant) FROM reglements_credit rc WHERE rc.vente_id = v.id), 0))
-          FROM ventes v WHERE v.client_id = c.id AND v.mode = 'credit'
-        ), 0) AS solde_credit,
-        (SELECT COUNT(*)::int FROM ventes v WHERE v.client_id = c.id) AS nb_achats
-      FROM clients c WHERE (c.nom ILIKE $1 OR c.tel ILIKE $1 OR c.adresse ILIKE $1)
-      ORDER BY c.nom LIMIT $2 OFFSET $3
-    `, [q, limit, page * limit]);
+    const { rows } = await pool.query(`SELECT c.* ${baseQ} ORDER BY c.nom LIMIT $2 OFFSET $3`, [q, limit, page * limit]);
+    if (rows.length) {
+      const ids = rows.map(c => c.id);
+      const { rows: credits } = await pool.query(`
+        SELECT v.client_id,
+          SUM(v.net - COALESCE((SELECT SUM(rc.montant) FROM reglements_credit rc WHERE rc.vente_id = v.id), 0)) AS solde_credit,
+          COUNT(*)::int AS nb_achats
+        FROM ventes v WHERE v.client_id = ANY($1::bigint[]) AND v.mode = 'credit'
+        GROUP BY v.client_id
+      `, [ids]);
+      const { rows: achats } = await pool.query(`
+        SELECT client_id, COUNT(*)::int AS nb FROM ventes WHERE client_id = ANY($1::bigint[]) GROUP BY client_id
+      `, [ids]);
+      const creditMap = {}; credits.forEach(c => creditMap[c.client_id] = c);
+      const achatsMap = {}; achats.forEach(a => achatsMap[a.client_id] = a.nb);
+      rows.forEach(c => {
+        c.solde_credit = creditMap[c.id] ? Number(creditMap[c.id].solde_credit) : 0;
+        c.nb_achats = achatsMap[c.id] || 0;
+      });
+    }
     return res.json({ rows, total, page, limit });
   }
-  const { rows } = await pool.query(`
-    SELECT c.*,
-      COALESCE((
-        SELECT SUM(v.net - COALESCE((SELECT SUM(rc.montant) FROM reglements_credit rc WHERE rc.vente_id = v.id), 0))
-        FROM ventes v
-        WHERE v.client_id = c.id AND v.mode = 'credit'
-      ), 0) AS solde_credit,
-      (SELECT COUNT(*)::int FROM ventes v WHERE v.client_id = c.id) AS nb_achats
-    FROM clients c
-    WHERE (c.nom ILIKE $1 OR c.tel ILIKE $1 OR c.adresse ILIKE $1)
-    ORDER BY c.nom
-  `, [q]);
+  const { rows } = await pool.query(`SELECT c.* ${baseQ} ORDER BY c.nom`, [q]);
+  if (rows.length) {
+    const ids = rows.map(c => c.id);
+    const { rows: credits } = await pool.query(`
+      SELECT v.client_id,
+        SUM(v.net - COALESCE((SELECT SUM(rc.montant) FROM reglements_credit rc WHERE rc.vente_id = v.id), 0)) AS solde_credit,
+        COUNT(*)::int AS nb_achats
+      FROM ventes v WHERE v.client_id = ANY($1::bigint[]) AND v.mode = 'credit'
+      GROUP BY v.client_id
+    `, [ids]);
+    const creditMap = {}; credits.forEach(c => creditMap[c.client_id] = c);
+    rows.forEach(c => { c.solde_credit = creditMap[c.id] ? Number(creditMap[c.id].solde_credit) : 0; c.nb_achats = creditMap[c.id] ? creditMap[c.id].nb_achats : 0; });
+  }
   res.json(rows);
 });
 
@@ -1371,6 +1404,16 @@ app.put("/api/modes-paiement/:id", auth, need("R_PARAMS"), async (req, res) => {
 
 /* ---------- lots & péremptions ---------- */
 app.get("/api/lots", auth, need("R_STOCK"), async (req, res) => {
+  const hasPage = req.query.page !== undefined || req.query.limit !== undefined;
+  if (hasPage) {
+    const page = Math.max(0, Number(req.query.page) || 0);
+    const limit = Math.min(Math.max(1, Number(req.query.limit) || 100), 1000);
+    const { rows: [{ total }] } = await pool.query(`SELECT COUNT(*)::int AS total FROM lots l WHERE l.qte_restante > 0`);
+    const { rows } = await pool.query(
+      `SELECT l.*, p.nom AS produit_nom FROM lots l JOIN produits p ON p.id = l.produit_id
+       WHERE l.qte_restante > 0 ORDER BY l.date_peremption ASC NULLS LAST, l.id DESC LIMIT $1 OFFSET $2`, [limit, page * limit]);
+    return res.json({ rows, total, page, limit });
+  }
   const { rows } = await pool.query(
     `SELECT l.*, p.nom AS produit_nom FROM lots l JOIN produits p ON p.id = l.produit_id
      WHERE l.qte_restante > 0 ORDER BY l.date_peremption ASC NULLS LAST, l.id DESC`);
@@ -1530,7 +1573,15 @@ app.post("/api/lots/rebut-multiple", auth, need("R_STOCK"), async (req, res) => 
 
 /* ---------- fournisseurs ---------- */
 app.get("/api/fournisseurs", auth, async (req, res) => {
-  const { rows } = await pool.query("SELECT * FROM fournisseurs ORDER BY nom");
+  const hasPage = req.query.page !== undefined || req.query.limit !== undefined;
+  if (hasPage) {
+    const page = Math.max(0, Number(req.query.page) || 0);
+    const limit = Math.min(Math.max(1, Number(req.query.limit) || 50), 500);
+    const { rows: [{ total }] } = await pool.query("SELECT COUNT(*)::int AS total FROM fournisseurs WHERE actif=true");
+    const { rows } = await pool.query("SELECT * FROM fournisseurs WHERE actif=true ORDER BY nom LIMIT $1 OFFSET $2", [limit, page * limit]);
+    return res.json({ rows, total, page, limit });
+  }
+  const { rows } = await pool.query("SELECT * FROM fournisseurs WHERE actif=true ORDER BY nom");
   res.json(rows);
 });
 app.post("/api/fournisseurs", auth, need("R_STOCK"), async (req, res) => {
@@ -1822,13 +1873,27 @@ app.get("/api/stock/dormant", auth, need("R_STOCK"), async (req, res) => {
 app.get("/api/depenses", auth, need("R_RAPPORTS"), async (req, res) => {
   const { from, to } = req.query;
   const showAll = req.query.all === '1';
+  const hasPage = req.query.page !== undefined || req.query.limit !== undefined;
+  const page = Math.max(0, Number(req.query.page) || 0);
+  const limit = Math.min(Math.max(1, Number(req.query.limit) || 50), 500);
+  const search = req.query.search ? "%" + req.query.search + "%" : null;
+  const baseWhere = `WHERE ($1::date IS NULL OR d.date::date >= $1) AND ($2::date IS NULL OR d.date::date <= $2) AND ($3 OR d.annule = false)`;
+  const searchClause = search ? ` AND (d.categorie ILIKE $4 OR d.motif ILIKE $4 OR d.mode ILIKE $4)` : "";
+  const countParams = [from || null, to || null, showAll, ...(search ? [search] : [])];
+  if (hasPage) {
+    const { rows: [{ total }] } = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM depenses d ${baseWhere}${searchClause}`, countParams);
+    const dataParams = [from || null, to || null, showAll, ...(search ? [search] : [])];
+    dataParams.push(limit, page * limit);
+    const { rows } = await pool.query(
+      `SELECT d.*, u.nom AS user_nom FROM depenses d LEFT JOIN users u ON u.id = d.user_id
+       ${baseWhere}${searchClause} ORDER BY d.date DESC LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}`, dataParams);
+    return res.json({ rows, total, page, limit });
+  }
   const { rows } = await pool.query(
     `SELECT d.*, u.nom AS user_nom FROM depenses d
      LEFT JOIN users u ON u.id = d.user_id
-     WHERE ($1::date IS NULL OR d.date::date >= $1)
-       AND ($2::date IS NULL OR d.date::date <= $2)
-       AND ($3 OR d.annule = false)
-     ORDER BY d.date DESC`, [from || null, to || null, showAll]);
+     ${baseWhere}${searchClause} ORDER BY d.date DESC`, countParams);
   res.json(rows);
 });
 const needDepenses = (req, res, next) => {

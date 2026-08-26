@@ -70,7 +70,8 @@ function handleUpgrade(req, socket, head) {
   if (new URL(req.url, "http://x").pathname !== "/ws") { socket.destroy(); return; }
   const t = new URL(API_TARGET);
   const ps = net.connect(t.port, t.hostname, () => {
-    ps.write("GET /ws HTTP/1.1\r\n" +
+    const wsPath = new URL(req.url, "http://x").pathname + new URL(req.url, "http://x").search;
+    ps.write("GET " + wsPath + " HTTP/1.1\r\n" +
       "Host: " + t.host + "\r\n" +
       "Upgrade: websocket\r\n" +
       "Connection: Upgrade\r\n" +

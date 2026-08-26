@@ -26,21 +26,13 @@ npm install                 # déjà fait ✔️
    npm run db:init
    ```
 
-3. **Charger les données de démonstration** :
-   ```bash
-   npm run db:seed
-   ```
 
-4. **Démarrer le serveur** :
    ```bash
    npm start
    ```
    → API sur `http://localhost:4000`, temps réel sur `ws://localhost:4000/ws`
 
-## 🔑 Comptes de démonstration
-`admin` / `admin123` · `Awa Diop` / `pc123` (caissière principale) · `Fatou Ndiaye` / `caisse123` (caissière)
-
-## 📡 API (résumé)
+## Démarrer le serveur
 
 | Méthode | Route | Droit | Description |
 |---|---|---|---|

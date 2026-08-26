@@ -234,7 +234,6 @@ INSERT INTO parametres(cle, valeur) VALUES
   ('remise_max_pct','100'),
   ('versement_validateur','admin'),
   ('annulation_validateur','admin'),
-  ('show_demo','1')
 ON CONFLICT (cle) DO NOTHING;
 
 -- Types de mouvements de stock (catalogue)

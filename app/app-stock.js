@@ -54,7 +54,7 @@ window.AppStock = (function () {
     box.innerHTML = `<div class="stk-mut">Chargement…</div>`;
     try {
       const [suggestions, fournisseurs] = await Promise.all([
-        api("/reappro/suggestions"), api("/fournisseurs")
+        api("/reappro/suggestions"), api("/fournisseurs?limit=200").then(d => Array.isArray(d) ? d : (d.rows||[]))
       ]);
       box.innerHTML = `
         <div class="stk-card"><h3>📦 À commander (sous le seuil)</h3>
@@ -84,7 +84,8 @@ window.AppStock = (function () {
     if (!box) return;
     box.innerHTML = `<div class="stk-mut">Chargement…</div>`;
     try {
-      const produits = await api("/produits");
+      const produitsData = await api("/produits?page=0&limit=200");
+      const produits = Array.isArray(produitsData) ? produitsData : (produitsData.rows || []);
       box.innerHTML = `
           <div class="stk-grid">
             <div><label>Produit</label><select id="stkProd">${produits.filter(p => p.actif !== false).map(p => `<option value="${p.id}">${esc(p.nom)}${p.code ? " (" + esc(p.code) + ")" : ""}</option>`).join("")}</select></div>
@@ -107,7 +108,8 @@ window.AppStock = (function () {
       const sugg = await api("/reappro/suggestions");
       if (!sugg.length) { toast("Rien à commander ✅"); return; }
       /* Une seule commande groupée via /api/commandes (le stock réel fait foi) */
-      const four = await api("/fournisseurs");
+      const fourData = await api("/fournisseurs?limit=200");
+      const four = Array.isArray(fourData) ? fourData : (fourData.rows || []);
       let f = four.find(x => (x.nom || "").toLowerCase() === nom.toLowerCase());
       if (!f) f = await api("/fournisseurs", { method: "POST", body: JSON.stringify({ nom }) });
       await api("/commandes", { method: "POST", body: JSON.stringify({
