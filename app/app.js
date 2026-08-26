@@ -3438,6 +3438,7 @@ renderers.params = async function () {
       <button class="tab on" data-ptab="id">🏪 Identité de la boutique</button>
       <button class="tab" data-ptab="modes">💳 Modes de paiement</button>
       <button class="tab" data-ptab="ticket">🧾 Aperçu du ticket</button>
+      <button class="tab" data-ptab="backups">💾 Sauvegardes</button>
     </div>
     <div id="ptPaneId">
       <div class="panel" style="margin-bottom:10px">
@@ -3489,12 +3490,73 @@ renderers.params = async function () {
         </div>
       </div>
     </div>
+    <div id="ptPaneBackups" style="display:none">
+      <div class="panel">
+        <div class="row" style="align-items:center;margin-bottom:6px">
+          <h3 class="grow" style="margin:0">💾 Sauvegardes automatiques</h3>
+          <button class="btn small primary" id="backupCreateBtn">📦 Créer un backup maintenant</button>
+        </div>
+        <p class="muted">Un backup est créé automatiquement à chaque démarrage du serveur. Vous pouvez aussi en créer un manuellement. Les 5 derniers backups sont conservés.</p>
+        <div id="backupListBox"></div>
+      </div>
+    </div>
     <p class="muted">💾 Les données sont stockées dans PostgreSQL - synchronisées entre tous les appareils en temps réel.</p>`;
-  const ptTabs = { id: $("#ptPaneId"), modes: $("#ptPaneModes"), ticket: $("#ptPaneTicket") };
+  const ptTabs = { id: $("#ptPaneId"), modes: $("#ptPaneModes"), ticket: $("#ptPaneTicket"), backups: $("#ptPaneBackups") };
   $$("#paramsBox [data-ptab]").forEach(btn => btn.addEventListener("click", () => {
     $$("#paramsBox [data-ptab]").forEach(x => x.classList.toggle("on", x === btn));
     Object.entries(ptTabs).forEach(([k, pane]) => { pane.style.display = k === btn.dataset.ptab ? "" : "none"; });
   }));
+  /* --- Sauvegardes --- */
+  async function loadBackups() {
+    try {
+      const backups = await api("/backups");
+      if (!backups.length) {
+        $("#backupListBox").innerHTML = `<p class="muted">Aucune sauvegarde disponible.</p>`;
+        return;
+      }
+      $("#backupListBox").innerHTML = `<div class="table-wrap"><table>
+        <tr><th>Date</th><th>Taille</th><th>Actions</th></tr>
+        ${backups.map(b => {
+          const d = new Date(b.date);
+          const dateStr = d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR');
+          const sizeStr = b.size > 1024*1024 ? (b.size/1024/1024).toFixed(1)+' Mo' : (b.size/1024).toFixed(1)+' Ko';
+          return `<tr>
+            <td>${esc(dateStr)}</td>
+            <td>${sizeStr}</td>
+            <td><button class="btn small" data-dl="${esc(b.name)}">📥 Télécharger</button></td>
+          </tr>`;
+        }).join('')}
+      </table></div>`;
+      $$('#backupListBox [data-dl]').forEach(btn => btn.addEventListener('click', async () => {
+        try {
+          const resp = await fetch(API_BASE + '/backups/' + encodeURIComponent(btn.dataset.dl) + '/download', {
+            headers: { 'Authorization': 'Bearer ' + token }
+          });
+          if (!resp.ok) throw new Error('Erreur ' + resp.status);
+          const blob = await resp.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = btn.dataset.dl;
+          document.body.appendChild(a); a.click(); a.remove();
+          URL.revokeObjectURL(url);
+        } catch (e) { toast('❌ Erreur téléchargement: ' + e.message); }
+      }));
+    } catch (e) {
+      $("#backupListBox").innerHTML = `<p class="muted">Erreur de chargement des sauvegardes.</p>`;
+    }
+  }
+  $("#backupCreateBtn").addEventListener("click", async () => {
+    try {
+      toast('📦 Création du backup en cours...');
+      await api("/backups/create", { method: 'POST' });
+      toast('✅ Backup créé avec succès');
+      loadBackups();
+    } catch (e) {
+      toast('❌ Erreur: ' + e.message);
+    }
+  });
+  loadBackups();
+  /* --- Fin Sauvegardes --- */
   $("#bpLogo").addEventListener("change", e => {
     const f = e.target.files[0]; if (!f) return;
     if (f.size > 300 * 1024) { toast("Image trop lourde (max 300 Ko)"); return; }
