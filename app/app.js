@@ -4483,20 +4483,6 @@ document.addEventListener("keydown", function(e) {
   const cartClSel = $("#cartClientSel");
   if (cartClSel) cartClSel.addEventListener("change", updateCartClientInfo);
 
-  const bkBtn = $("#backupExportBtn");
-  if (bkBtn) bkBtn.addEventListener("click", async () => {
-    bkBtn.disabled = true; bkBtn.textContent = "Téléchargement...";
-    try {
-      const data = await api("/backup/export");
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = "sauvegarde-gsv-" + todayKey() + ".json";
-      a.click();
-      toast("Sauvegarde téléchargée avec succès 💾");
-    } catch (e) { toast(e.message); }
-    bkBtn.disabled = false; bkBtn.textContent = "💾 Télécharger la sauvegarde complète (JSON)";
-  });
 
   $("#modal").addEventListener("click", e => { if (e.target === $("#modal")) closeModal(); });
 }
