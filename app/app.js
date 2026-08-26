@@ -2596,43 +2596,32 @@ renderers.point = async function () {
   const tCompte = caisses.reduce((s, c) => s + Number(c.total_compte || 0), 0);
   const tEcart = caisses.reduce((s, c) => s + Number(c.ecart || 0), 0);
   const tVerse = caisses.reduce((s, c) => s + Number(c.verse_total), 0);
-  const row = c => `<tr>
-    <td class="sticky-l">${esc(c.user_nom)}</td>
-    <td>${new Date(c.ouverte_le).toLocaleDateString("fr-FR")} ${new Date(c.ouverte_le).toLocaleTimeString("fr-FR")}${c.fermee_le ? `<br><span class="muted">fermée ${new Date(c.fermee_le).toLocaleTimeString("fr-FR")}</span>` : ""}</td>
-    <td>${caisseBadge(c.statut)}${c.statut === "validee" ? `<br><span class="muted">par ${esc(c.validee_par_nom || "")}</span>` : ""}</td>
-    <td class="num">${money(c.fonds_initial)}</td>
-    <td class="num">${money(c.especes)}</td>
-    <td class="num">${money(c.autres || 0)}</td>
-    <td class="num"><b>${money(c.statut === "ouverte" ? c.attendu_especes : c.total_attendu || 0)}</b></td>
-    <td class="num">${c.total_compte != null ? money(c.total_compte) : "-"}</td>
-    <td class="num">${c.ecart != null ? `<span class="${Number(c.ecart) === 0 ? "ok" : "bad"}">${Number(c.ecart) > 0 ? "+" : ""}${money(c.ecart)}</span>` : "-"}</td>
-    <td class="num">${money(c.verse_total)}</td>
-    <td class="sticky-r"><div class="actions">
-      <button class="btn small" data-detail="${c.id}">👁️ Détail</button>
-      ${c.statut === "ouverte" ? `<button class="btn small" data-vers="${c.id}">➕ Versement</button>` : ""}
-      ${c.statut === "fermee" ? `<button class="btn small success" data-val="${c.id}">✅ Valider</button><button class="btn small" data-rejet="${c.id}">🚫 Rejeter</button>` : ""}
-
-    </div></td>
-  </tr>`;
+  const nA = attente.length, nV = validees.length, nTot = caisses.length;
+  const hasEcart = tEcart !== 0;
   $("#pointBox").innerHTML = `
-    <div class="panel" style="margin-bottom:8px">
-      <div class="row wrap" style="align-items:flex-end">
-        <label class="field">Du <input id="ptFrom" type="date" value="${pointFrom}"></label>
-        <label class="field">Au <input id="ptTo" type="date" value="${pointTo}"></label>
-        <label class="field">Caissière
-          <select id="ptCaiss"><option value="">Toutes</option>${cashiers.map(x => `<option ${String(pointCaiss) === String(x.id) ? "selected" : ""} value="${x.id}">${esc(x.nom)}</option>`).join("")}</select>
-        </label>
-        <button class="btn primary" id="ptFilter">🔎 Filtrer</button>
-      </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">
+      <label class="field" style="margin:0">Du <input id="ptFrom" type="date" value="${pointFrom}" style="width:140px"></label>
+      <label class="field" style="margin:0">Au <input id="ptTo" type="date" value="${pointTo}" style="width:140px"></label>
+      <label class="field" style="margin:0">Caissière
+        <select id="ptCaiss" style="width:130px"><option value="">Toutes</option>${cashiers.map(x => `<option ${String(pointCaiss) === String(x.id) ? "selected" : ""} value="${x.id}">${esc(x.nom)}</option>`).join("")}</select>
+      </label>
+      <button class="btn primary" id="ptFilter">🔎</button>
     </div>
-    <div class="chips">
-      <button class="chip-btn ${pointTab === "attente" ? "active" : ""}" data-tab="attente">⏳ En attente (${attente.length})</button>
-      <button class="chip-btn ${pointTab === "validees" ? "active" : ""}" data-tab="validees">✅ Validées (${validees.length})</button>
+    <div class="cards" style="margin-bottom:10px">
+      <div class="card" style="border-left:3px solid var(--primary)"><div class="k">Caisses</div><div class="v">${nTot}</div></div>
+      <div class="card" style="border-left:3px solid var(--warn)"><div class="k">⏳ En attente</div><div class="v">${nA}</div></div>
+      <div class="card" style="border-left:3px solid var(--ok)"><div class="k">✅ Validées</div><div class="v">${nV}</div></div>
+      <div class="card" style="border-left:3px solid var(--primary)"><div class="k">💵 Attendu</div><div class="v">${money(tAttendu)}</div></div>
+      <div class="card" style="border-left:3px solid ${hasEcart ? "var(--bad)" : "var(--ok)"}"><div class="k">⚠️ Écart</div><div class="v ${hasEcart ? "bad" : "ok"}">${tEcart >= 0 ? "+" : ""}${money(tEcart)}</div></div>
+    </div>
+    <div class="chips" style="margin-bottom:8px">
+      <button class="chip-btn ${pointTab === "attente" ? "active" : ""}" data-tab="attente">⏳ En attente (${nA})</button>
+      <button class="chip-btn ${pointTab === "validees" ? "active" : ""}" data-tab="validees">✅ Validées (${nV})</button>
       <button class="chip-btn ${pointTab === "classement" ? "active" : ""}" data-tab="classement">🏆 Classement</button>
     </div>
     ${pointTab === "classement" ? `
     <div class="point-card">
-      <h3>🏆 Classement du point (${pointFrom} → ${pointTo})</h3>
+      <h3>🏆 Classement (${pointFrom} → ${pointTo})</h3>
       <div class="chips">
         <button class="chip-btn ${pointClass === "caissiere" ? "active" : ""}" data-cl="caissiere">Par caissière</button>
         <button class="chip-btn ${pointClass === "famille" ? "active" : ""}" data-cl="famille">Par famille</button>
@@ -2641,19 +2630,29 @@ renderers.point = async function () {
       <div id="pointClassBox"></div>
     </div>` : `
     <div class="point-card">
-      <h3>${pointTab === "attente" ? "⏳ Caisses en attente (ouvertes ou fermées à valider)" : "✅ Caisses validées"} - ${pointFrom} → ${pointTo}</h3>
       ${tab.length > 0 ? pgBar("point", tab.length, "caisse(s)") : ""}
       <div class="table-wrap"><table>
-        <tr><th class="sticky-l">Caissière</th><th>Ouverture / fermeture</th><th>Statut</th><th class="num">Fonds</th><th class="num">Espèces</th><th class="num">Autres modes</th><th class="num">Attendu tiroir</th><th class="num">Compté</th><th class="num">Écart</th><th class="num">Versé</th><th class="sticky-r">Actions</th></tr>
-        ${tab.length === 0 ? `<tr><td colspan="11" class="empty">Aucune caisse dans cet onglet pour la période</td></tr>` : pgSlice("point", tab).part.map(row).join("")}
-        <tr style="font-weight:800"><td class="sticky-l">Total période (${tab.length})</td><td colspan="2"></td><td class="num">${money(tFonds)}</td><td class="num">${money(tEsp)}</td><td class="num">${money(tAutres)}</td><td class="num">${money(tAttendu)}</td><td class="num">${money(tCompte)}</td><td class="num">${money(tEcart)}</td><td class="num">${money(tVerse)}</td><td class="sticky-r"></td></tr>
+        <tr><th class="sticky-l">Caissière</th><th>Ouverture</th><th class="num">Ventes</th><th class="num">Espèces attendu</th><th class="num">Compté</th><th class="num">Écart</th><th class="sticky-r">Actions</th></tr>
+        ${tab.length === 0 ? `<tr><td colspan="7" class="empty">Aucune caisse dans cet onglet pour la période</td></tr>` : pgSlice("point", tab).part.map(c => `<tr>
+          <td class="sticky-l"><b>${esc(c.user_nom)}</b><br>${caisseBadge(c.statut)}${c.statut === "validee" ? ` <span class="muted">par ${esc(c.validee_par_nom || "")}</span>` : ""}</td>
+          <td>${new Date(c.ouverte_le).toLocaleDateString("fr-FR")} ${new Date(c.ouverte_le).toLocaleTimeString("fr-FR")}${c.fermee_le ? `<br><span class="muted">fermée ${new Date(c.fermee_le).toLocaleTimeString("fr-FR")}</span>` : ""}</td>
+          <td class="num">${money(c.total)}</td>
+          <td class="num">${money(c.statut === "ouverte" ? c.attendu_especes : c.total_attendu || 0)}</td>
+          <td class="num">${c.total_compte != null ? money(c.total_compte) : "-"}</td>
+          <td class="num">${c.ecart != null ? `<span class="${Number(c.ecart) === 0 ? "ok" : "bad"}">${Number(c.ecart) > 0 ? "+" : ""}${money(c.ecart)}</span>` : "-"}</td>
+          <td class="sticky-r"><div class="actions">
+            <button class="btn small" data-detail="${c.id}">👁️</button>
+            ${c.statut === "ouverte" ? `<button class="btn small" data-vers="${c.id}">➕</button>` : ""}
+            ${c.statut === "fermee" ? `<button class="btn small success" data-val="${c.id}">✅</button><button class="btn small danger" data-rejet="${c.id}">🚫</button>` : ""}
+          </div></td>
+        </tr>`).join("")}
+        <tr style="font-weight:800;background:var(--bg2)"><td class="sticky-l">Total (${tab.length})</td><td></td><td class="num">${money(tab.reduce((s,c)=>s+Number(c.total),0))}</td><td class="num">${money(tAttendu)}</td><td class="num">${money(tCompte)}</td><td class="num ${hasEcart ? "bad" : "ok"}">${tEcart >= 0 ? "+" : ""}${money(tEcart)}</td><td class="sticky-r"></td></tr>
       </table></div>
-      <div class="row wrap" style="margin-top:10px;gap:8px">
-        <button class="btn primary" id="pointPrint">🖨️ Imprimer ce tableau</button>
-        <button class="btn success" id="pointWhatsapp">📲 Bilan WhatsApp</button>
+      <div class="row wrap" style="margin-top:10px;gap:8px;justify-content:flex-end">
+        <button class="btn primary" id="pointPrint">🖨️ Imprimer</button>
+        <button class="btn success" id="pointWhatsapp">📲 WhatsApp</button>
         <button class="btn ghost" id="pointCsv">⬇️ CSV</button>
       </div>
-      <p class="muted" style="margin-top:8px">💡 ${esc(reglePoint())}</p>
     </div>`}`;
   $("#ptFilter").addEventListener("click", () => {
     pointFrom = $("#ptFrom").value || todayKey();
@@ -2673,7 +2672,7 @@ renderers.point = async function () {
   const waBtn = $("#pointWhatsapp");
   if (waBtn) waBtn.addEventListener("click", () => sharePointWhatsApp(caisses, pointFrom, pointTo));
   $("#pointCsv").addEventListener("click", () => {
-    const lines = [["Caissière", "Ouverture", "Statut", "Fonds", "Espèces", "Autres modes", "Attendu", "Compté", "Écart", "Versé"]].concat(tab.map(c => [c.user_nom, new Date(c.ouverte_le).toLocaleString("fr-FR"), c.statut, c.fonds_initial, c.especes, c.autres || 0, c.statut === "ouverte" ? c.attendu_especes : c.total_attendu || 0, c.total_compte != null ? c.total_compte : "", c.ecart != null ? c.ecart : "", c.verse_total]));
+    const lines = [["Caissière", "Ouverture", "Statut", "Ventes", "Espèces attendu", "Compté", "Écart"]].concat(tab.map(c => [c.user_nom, new Date(c.ouverte_le).toLocaleString("fr-FR"), c.statut, c.total, c.statut === "ouverte" ? c.attendu_especes : c.total_attendu || 0, c.total_compte != null ? c.total_compte : "", c.ecart != null ? c.ecart : ""]));
     downloadCsv("caisses-" + pointFrom + "-" + pointTo + ".csv", lines);
   });
   $$("#pointBox [data-detail]").forEach(b => b.addEventListener("click", () => caisseDetail(caisses.find(c => String(c.id) === String(b.dataset.detail)))));
