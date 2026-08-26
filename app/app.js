@@ -3483,12 +3483,12 @@ renderers.params = async function () {
   const b = DB.boutique || {};
   $("#paramsBox").innerHTML = `
     <div class="tabs" style="margin-bottom:10px">
-      <button class="tab" data-ptab="backups">💾 Sauvegardes</button>
       <button class="tab" data-ptab="id">🏪 Identité de la boutique</button>
       <button class="tab" data-ptab="modes">💳 Modes de paiement</button>
       <button class="tab" data-ptab="ticket">🧾 Aperçu du ticket</button>
+      <button class="tab" data-ptab="backups">💾 Sauvegardes</button>
     </div>
-    <div id="ptPaneId" style="display:none">
+    <div id="ptPaneId">
       <div class="panel" style="margin-bottom:10px">
         <h3>🏪 Identité de la boutique (apparaît sur les tickets et documents)</h3>
         <div class="row"><label class="field grow">Nom de la boutique <input id="bpNom" data-fmt="name" value="${esc(b.nom || "")}"></label>
@@ -3538,7 +3538,7 @@ renderers.params = async function () {
         </div>
       </div>
     </div>
-    <div id="ptPaneBackups">
+    <div id="ptPaneBackups" style="display:none">
       <div class="panel">
         <div class="row" style="align-items:center;margin-bottom:6px">
           <h3 class="grow" style="margin:0">💾 Sauvegardes automatiques</h3>
@@ -3555,6 +3555,7 @@ renderers.params = async function () {
   $$("#paramsBox [data-ptab]").forEach(btn => btn.addEventListener("click", () => {
     $$("#paramsBox [data-ptab]").forEach(x => x.classList.toggle("on", x === btn));
     Object.entries(ptTabs).forEach(([k, pane]) => { pane.style.display = k === btn.dataset.ptab ? "" : "none"; });
+    if (btn.dataset.ptab === "backups") setTimeout(() => ptTabs.backups.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
   }));
   /* --- Sauvegardes --- */
   async function loadBackups() {
