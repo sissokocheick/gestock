@@ -317,6 +317,56 @@ app.post("/api/backups/create", auth, need("R_PARAMS"), async (req, res) => {
     res.json({ ok: true, file });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+app.post("/api/backups/:name/restore", auth, need("R_PARAMS"), async (req, res) => {
+  try {
+    const file = path.join(BACKUP_DIR, req.params.name);
+    if (!file.startsWith(BACKUP_DIR) || !fs.existsSync(file)) return res.status(404).json({ error: 'Backup introuvable' });
+    const raw = fs.readFileSync(file, 'utf8');
+    const backup = JSON.parse(raw);
+    if (!backup.tables) return res.status(400).json({ error: 'Format de backup invalide' });
+    const log = [];
+    const order = ['roles','droits','familles','parametres','boutique','users','produits','clients','fournisseurs',
+                   'lots','mouvements','ventes','vente_items','caisses','depenses','commandes','commande_items','credits'];
+    const tables = Object.keys(backup.tables);
+    const sorted = tables.sort((a,b) => {
+      const ia = order.indexOf(a), ib = order.indexOf(b);
+      return (ia===-1?999:ia)-(ib===-1?999:ib);
+    });
+    for (const t of sorted) {
+      const rows = backup.tables[t];
+      if (!Array.isArray(rows) || !rows.length) continue;
+      try {
+        const { rows: colRows } = await pool.query(
+          "SELECT column_name FROM information_schema.columns WHERE table_name=$1", [t]);
+        const existingCols = new Set(colRows.map(c => c.column_name));
+        const backupCols = Object.keys(rows[0]);
+        const cols = backupCols.filter(c => existingCols.has(c));
+        if (cols.length === 0) { log.push(t + ': ignoré (aucune colonne)'); continue; }
+        await pool.query('DELETE FROM ' + t);
+        for (let i = 0; i < rows.length; i += 200) {
+          const batch = rows.slice(i, i + 200);
+          for (const row of batch) {
+            const vals = cols.map(c => {
+              const v = row[c];
+              if (v !== null && typeof v === 'object') return JSON.stringify(v);
+              return v;
+            });
+            const placeholders = cols.map((_, j) => '$' + (j + 1));
+            await pool.query(
+              'INSERT INTO ' + t + ' (' + cols.join(',') + ') VALUES (' + placeholders.join(',') + ')',
+              vals
+            );
+          }
+        }
+        log.push(t + ': ' + rows.length + ' lignes');
+      } catch (e) {
+        log.push(t + ': ERREUR - ' + e.message.split('\n')[0]);
+      }
+    }
+    broadcast({ type: 'sync' });
+    res.json({ ok: true, log });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 app.post("/api/backups/restore", auth, need("R_PARAMS"), async (req, res) => {
   try {
     const { backup } = req.body;

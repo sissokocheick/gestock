@@ -3573,10 +3573,28 @@ renderers.params = async function () {
           return `<tr>
             <td>${esc(dateStr)}</td>
             <td>${sizeStr}</td>
-            <td><button class="btn small" data-dl="${esc(b.name)}">📥 Télécharger</button></td>
+            <td>
+              <button class="btn small" data-dl="${esc(b.name)}">📥</button>
+              <button class="btn small success" data-restore="${esc(b.name)}">🔄</button>
+            </td>
           </tr>`;
         }).join('')}
       </table></div>`;
+      $$('#backupListBox [data-restore]').forEach(btn => btn.addEventListener('click', async () => {
+        const name = btn.dataset.restore;
+        askConfirm(
+          'Restaurer ce backup ?',
+          `⚠️ Ceci <b>VIDERA</b> les tables existantes et les remplacera par les données du backup <b>${esc(name)}</b>. Cette action est <b>IRRÉVERSIBLE</b>.`,
+          async () => {
+            try {
+              toast('⏳ Restauration en cours...');
+              const r = await api('/backups/' + encodeURIComponent(name) + '/restore', { method: 'POST' });
+              toast('✅ Restauration terminée ! ' + (r.log || []).length + ' tables traitées');
+            } catch (err) { toast('❌ Erreur restauration: ' + err.message); }
+          },
+          { danger: true, okLabel: 'Restaurer' }
+        );
+      }));
       $$('#backupListBox [data-dl]').forEach(btn => btn.addEventListener('click', async () => {
         try {
           const resp = await fetch(API_BASE + '/backups/' + encodeURIComponent(btn.dataset.dl) + '/download', {
