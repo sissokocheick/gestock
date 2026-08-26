@@ -290,6 +290,34 @@ app.get("/api/types-mouvement", auth, async (req, res) => {
   res.json(rows);
 });
 
+/* ---------- backups ---------- */
+app.get("/api/backups", auth, need("R_PARAMS"), async (req, res) => {
+  try {
+    if (!fs.existsSync(BACKUP_DIR)) return res.json([]);
+    const files = fs.readdirSync(BACKUP_DIR)
+      .filter(f => f.endsWith('.json'))
+      .map(f => {
+        const stat = fs.statSync(path.join(BACKUP_DIR, f));
+        return { name: f, size: stat.size, date: stat.mtime };
+      })
+      .sort((a, b) => b.date - a.date);
+    res.json(files);
+  } catch (e) { res.json([]); }
+});
+app.get("/api/backups/:name/download", auth, need("R_PARAMS"), async (req, res) => {
+  try {
+    const file = path.join(BACKUP_DIR, req.params.name);
+    if (!file.startsWith(BACKUP_DIR) || !fs.existsSync(file)) return res.status(404).json({ error: 'Backup introuvable' });
+    res.download(file);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/api/backups/create", auth, need("R_PARAMS"), async (req, res) => {
+  try {
+    const file = await backupDatabase();
+    res.json({ ok: true, file });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 /* ---------- produits ---------- */
 app.get("/api/familles", auth, async (req, res) => {
   const showAll = req.query.all === '1' && (req.user.role_code === 'admin' || req.user.droits?.includes('R_PRODUITS'));
@@ -2232,6 +2260,46 @@ async function autoSeed() {
   } catch (e) { console.error("⚠️ Auto-seed échoué:", e.message); }
 }
 
+/* ---------- backup automatique avant nettoyage ---------- */
+const BACKUP_DIR = path.join(__dirname, '..', 'backups');
+const MAX_BACKUPS = 5; /* garder les 5 derniers backups */
+
+async function backupDatabase() {
+  try {
+    if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const file = path.join(BACKUP_DIR, 'pre-cleanup-' + ts + '.json');
+    const tables = ['produits', 'clients', 'ventes', 'vente_items', 'caisses',
+                     'mouvements', 'lots', 'depenses', 'familles', 'users',
+                     'parametres', 'boutique', 'fournisseurs', 'commandes',
+                     'commande_items', 'credits', 'roles', 'droits'];
+    const dump = { date: new Date().toISOString(), tables: {} };
+    let totalRows = 0;
+    for (const t of tables) {
+      try {
+        const { rows } = await pool.query(`SELECT * FROM ${t}`);
+        dump.tables[t] = rows;
+        totalRows += rows.length;
+      } catch (e) { /* table peut ne pas exister */ }
+    }
+    fs.writeFileSync(file, JSON.stringify(dump));
+    console.log(`💾 Backup pré-nettoyage: ${totalRows} lignes dans ${Object.keys(dump.tables).length} tables → ${file}`);
+    /* Nettoyer les anciens backups */
+    try {
+      const files = fs.readdirSync(BACKUP_DIR)
+        .filter(f => f.startsWith('pre-cleanup-') && f.endsWith('.json'))
+        .sort();
+      while (files.length > MAX_BACKUPS) {
+        fs.unlinkSync(path.join(BACKUP_DIR, files.shift()));
+      }
+    } catch (e) { }
+    return file;
+  } catch (e) {
+    console.error('⚠️ Backup échoué:', e.message);
+    return null;
+  }
+}
+
 /* ---------- nettoyage auto des données de test au démarrage ---------- */
 async function cleanupTestData() {
   const log = [];
@@ -2323,6 +2391,6 @@ async function detectCaps() {
       console.log("✅ Colonnes critiques présentes (clôture de caisse, versements, dépenses)");
   } catch (e) { }
 }
-initSchema().then(() => detectCaps()).then(() => autoSeed()).then(() => cleanupTestData()).then(() => {
+initSchema().then(() => detectCaps()).then(() => autoSeed()).then(() => backupDatabase()).then(() => cleanupTestData()).then(() => {
   server.listen(PORT, () => console.log("✅ Backend Gestion Stock & Vente sur http://localhost:" + PORT + " (WebSocket: /ws)"));
 });
