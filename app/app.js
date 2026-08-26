@@ -3495,6 +3495,8 @@ renderers.params = async function () {
         <div class="row" style="align-items:center;margin-bottom:6px">
           <h3 class="grow" style="margin:0">💾 Sauvegardes automatiques</h3>
           <button class="btn small primary" id="backupCreateBtn">📦 Créer un backup maintenant</button>
+          <button class="btn small" id="backupImportBtn">📥 Importer un backup</button>
+          <input type="file" id="backupImportFile" accept=".json" style="display:none">
         </div>
         <p class="muted">Un backup est créé automatiquement à chaque démarrage du serveur. Vous pouvez aussi en créer un manuellement. Les 5 derniers backups sont conservés.</p>
         <div id="backupListBox"></div>
@@ -3556,6 +3558,32 @@ renderers.params = async function () {
     }
   });
   loadBackups();
+  /* Import backup */
+  $("#backupImportBtn").addEventListener("click", () => $("#backupImportFile").click());
+  $("#backupImportFile").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const backup = JSON.parse(text);
+      if (!backup.tables) { toast('❌ Fichier de backup invalide'); return; }
+      const total = Object.values(backup.tables).reduce((s, t) => s + (Array.isArray(t) ? t.length : 0), 0);
+      askConfirm(
+        'Restaurer ce backup ?',
+        `⚠️ Ceci <b>VIDERA</b> les tables existantes et les remplacera par les données du backup (${Object.keys(backup.tables).length} tables, ${total} lignes). Cette action est <b>IRRÉVERSIBLE</b>.`,
+        async () => {
+          try {
+            toast('⏳ Restauration en cours...');
+            const r = await api('/backups/restore', { method: 'POST', body: JSON.stringify({ backup }) });
+            toast('✅ Restauration terminée ! ' + (r.log || []).length + ' tables traitées');
+            loadBackups();
+          } catch (err) { toast('❌ Erreur restauration: ' + err.message); }
+        },
+        { danger: true, okLabel: 'Restaurer' }
+      );
+    } catch (err) { toast('❌ Fichier JSON invalide: ' + err.message); }
+    e.target.value = '';
+  });
   /* --- Fin Sauvegardes --- */
   $("#bpLogo").addEventListener("change", e => {
     const f = e.target.files[0]; if (!f) return;
