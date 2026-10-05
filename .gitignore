@@ -1,4 +1,7 @@
 node_modules/
 .env
-backups/
+backups/*.json
+!backups/gestion_stock_2026-08-18_restored.json
+backend/backups/*.json
+!backend/backups/gestion_stock_2026-08-18_restored.json
 *.bak

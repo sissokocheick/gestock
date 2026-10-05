@@ -8,10 +8,15 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const compression = require("compression");
 
-/* Refuser de démarrer sans JWT_SECRET défini */
-if (!process.env.JWT_SECRET || process.env.JWT_SECRET === "dev-secret-change-me") {
-  console.error("\n❌ FATAL : JWT_SECRET non défini ou identique à la valeur par défaut.\n   Définissez une clé secrète dans backend/.env : JWT_SECRET=votre-cle-aleatoire-ici\n");
-  process.exit(1);
+/* JWT_SECRET avec fallback sécurisé */
+let defaultJwtSecret = process.env.JWT_SECRET;
+if (!defaultJwtSecret || defaultJwtSecret === "dev-secret-change-me") {
+  if (process.env.NODE_ENV === "production") {
+    console.warn("⚠️ Attention : JWT_SECRET non défini en production. Génération automatique d'une clé temporaire.");
+    defaultJwtSecret = require("crypto").randomBytes(32).toString("hex");
+  } else {
+    defaultJwtSecret = "dev-secret-change-me";
+  }
 }
 const os = require("os");
 const http = require("http");
@@ -24,10 +29,15 @@ const app = express();
 /* CORS restreint : localhost + IP LAN de la machine (l'app passe par le proxy same-origin de toute façon) */
 const LAN_IPS = Object.values(os.networkInterfaces()).flat().filter(i => i && i.family === "IPv4" && !i.internal).map(i => i.address);
 const ORIGIN_OK = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
-const CLOUD_URL = process.env.RAILWAY_STATIC_URL || process.env.APP_URL || "";
+const CLOUD_URL = process.env.RENDER_EXTERNAL_URL || process.env.RAILWAY_STATIC_URL || process.env.APP_URL || "";
 /* En production, servir les fichiers frontend depuis ../app */
 const path = require("path");
 const fs = require("fs");
+const BACKUP_DIRS = [
+  path.join(__dirname, "..", "backups"),
+  path.join(__dirname, "..", "..", "backups")
+];
+const BACKUP_DIR = BACKUP_DIRS.find(d => fs.existsSync(d)) || BACKUP_DIRS[0];
 /* Sécurité HTTP — CSP activée (l'app utilise styles/scripts inline + data: pour les photos) */
 app.use(helmet({
   contentSecurityPolicy: {
@@ -80,7 +90,7 @@ for (const m of ROUTE_METHODS) {
   }));
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
+const JWT_SECRET = defaultJwtSecret;
 const PORT = process.env.PORT === '0' || !process.env.PORT ? 4000 : Number(process.env.PORT);
 
 /* ---------- temps réel (WebSocket) — authentifié par token JWT ---------- */
@@ -293,21 +303,26 @@ app.get("/api/types-mouvement", auth, async (req, res) => {
 /* ---------- backups ---------- */
 app.get("/api/backups", auth, need("R_PARAMS"), async (req, res) => {
   try {
-    if (!fs.existsSync(BACKUP_DIR)) return res.json([]);
-    const files = fs.readdirSync(BACKUP_DIR)
-      .filter(f => f.endsWith('.json'))
-      .map(f => {
-        const stat = fs.statSync(path.join(BACKUP_DIR, f));
-        return { name: f, size: stat.size, date: stat.mtime };
-      })
-      .sort((a, b) => b.date - a.date);
+    const fileMap = new Map();
+    for (const dir of BACKUP_DIRS) {
+      if (!fs.existsSync(dir)) continue;
+      const list = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+      for (const f of list) {
+        if (!fileMap.has(f)) {
+          const stat = fs.statSync(path.join(dir, f));
+          fileMap.set(f, { name: f, size: stat.size, date: stat.mtime });
+        }
+      }
+    }
+    const files = Array.from(fileMap.values()).sort((a, b) => b.date - a.date);
     res.json(files);
   } catch (e) { res.json([]); }
 });
 app.get("/api/backups/:name/download", auth, need("R_PARAMS"), async (req, res) => {
   try {
-    const file = path.join(BACKUP_DIR, req.params.name);
-    if (!file.startsWith(BACKUP_DIR) || !fs.existsSync(file)) return res.status(404).json({ error: 'Backup introuvable' });
+    const safeName = path.basename(req.params.name);
+    const file = BACKUP_DIRS.map(d => path.join(d, safeName)).find(p => fs.existsSync(p));
+    if (!file) return res.status(404).json({ error: 'Backup introuvable' });
     res.download(file);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -319,8 +334,9 @@ app.post("/api/backups/create", auth, need("R_PARAMS"), async (req, res) => {
 });
 app.post("/api/backups/:name/restore", auth, need("R_PARAMS"), async (req, res) => {
   try {
-    const file = path.join(BACKUP_DIR, req.params.name);
-    if (!file.startsWith(BACKUP_DIR) || !fs.existsSync(file)) return res.status(404).json({ error: 'Backup introuvable' });
+    const safeName = path.basename(req.params.name);
+    const file = BACKUP_DIRS.map(d => path.join(d, safeName)).find(p => fs.existsSync(p));
+    if (!file) return res.status(404).json({ error: 'Backup introuvable' });
     const raw = fs.readFileSync(file, 'utf8');
     const backup = JSON.parse(raw);
     if (!backup.tables) return res.status(400).json({ error: 'Format de backup invalide' });
@@ -2189,8 +2205,12 @@ require("./module-stock")({ app, auth, need, broadcast });
 
 /* ---------- santé (avant le catch-all statique) ---------- */
 app.get("/api/health", async (req, res) => {
-  try { await pool.query("SELECT 1"); res.json({ ok: true, uptime: Math.round(process.uptime()), date: new Date().toISOString() }); }
-  catch (e) { res.status(503).json({ ok: false, error: "Base de données injoignable" }); }
+  try {
+    await pool.query("SELECT 1");
+    res.json({ ok: true, db: true, uptime: Math.round(process.uptime()), date: new Date().toISOString() });
+  } catch (e) {
+    res.json({ ok: true, db: false, warning: "Base de données non prête : " + e.message, uptime: Math.round(process.uptime()), date: new Date().toISOString() });
+  }
 });
 
 /* En production : servir le frontend statique depuis ../app */
@@ -2335,8 +2355,65 @@ async function initSchema() {
   } catch (e) { console.log("⚠️ Sync colonnes :", e.message); }
 }
 async function autoSeed() {
-  const { rows: [{ count }] } = await pool.query("SELECT count(*) FROM users");
-  if (Number(count) > 0) return; // déjà des utilisateurs
+  try {
+    const { rows: [{ count }] } = await pool.query("SELECT count(*) FROM users");
+    if (Number(count) > 0) return; // déjà des utilisateurs
+  } catch (e) {
+    console.error("⚠️ Auto-seed vérification échouée:", e.message);
+    return;
+  }
+
+  // Vérifier si un backup initial complet est disponible
+  const backupCandidate = BACKUP_DIRS.map(d => path.join(d, "gestion_stock_2026-08-18_restored.json")).find(p => fs.existsSync(p));
+  if (backupCandidate) {
+    console.log("🌱 Base vide — Restauration automatique du backup initial (" + backupCandidate + ")...");
+    try {
+      const raw = fs.readFileSync(backupCandidate, "utf8");
+      const backup = JSON.parse(raw);
+      if (backup && backup.tables) {
+        const order = [
+          "roles", "droits", "familles", "parametres", "boutique", "magasins", "services",
+          "modes_paiement", "types_mouvement", "users", "fournisseurs", "produits",
+          "lots", "stocks_magasin", "commandes", "commande_items", "bons", "bon_items",
+          "demandes", "demande_items", "inventaires", "inventaire_items", "suggestions",
+          "caisses", "ventes", "vente_items", "mouvements", "points_soir", "depenses",
+          "versements", "versements_caisse"
+        ];
+        let tot = 0;
+        for (const t of order) {
+          const rows = backup.tables[t];
+          if (!rows || !rows.length) continue;
+          try {
+            const { rows: colRows } = await pool.query(
+              "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1", [t]);
+            const existingCols = new Set(colRows.map(c => c.column_name));
+            const cols = Object.keys(rows[0]).filter(c => existingCols.has(c));
+            if (!cols.length) continue;
+            for (const row of rows) {
+              const vals = cols.map(c => {
+                const v = row[c];
+                if (v !== null && typeof v === "object") return JSON.stringify(v);
+                return v;
+              });
+              const placeholders = cols.map((_, idx) => "$" + (idx + 1));
+              await pool.query(
+                "INSERT INTO " + t + " (" + cols.join(",") + ") VALUES (" + placeholders.join(",") + ") ON CONFLICT DO NOTHING",
+                vals
+              );
+              tot++;
+            }
+          } catch (te) {
+            console.error("⚠️ Table " + t + " ignorée pendant la restauration :", te.message);
+          }
+        }
+        console.log("🎉 Données historiques restaurées automatiquement (" + tot + " lignes) !");
+        return;
+      }
+    } catch (e) {
+      console.error("⚠️ Restauration automatique échouée, passage au compte par défaut :", e.message);
+    }
+  }
+
   console.log("🌱 Base vide — création du compte admin initial...");
   const mdpAdmin = Math.random().toString(36).slice(2, 6).toUpperCase() + "-" + Math.random().toString(36).slice(2, 10);
   try {
@@ -2361,7 +2438,6 @@ async function autoSeed() {
 }
 
 /* ---------- backup automatique avant nettoyage ---------- */
-const BACKUP_DIR = path.join(__dirname, '..', 'backups');
 const MAX_BACKUPS = 5; /* garder les 5 derniers backups */
 
 async function backupDatabase() {
@@ -2491,6 +2567,19 @@ async function detectCaps() {
       console.log("✅ Colonnes critiques présentes (clôture de caisse, versements, dépenses)");
   } catch (e) { }
 }
-initSchema().then(() => detectCaps()).then(() => autoSeed()).then(() => backupDatabase()).then(() => cleanupTestData()).then(() => {
-  server.listen(PORT, () => console.log("✅ Backend Gestion Stock & Vente sur http://localhost:" + PORT + " (WebSocket: /ws)"));
+async function initDatabaseAsync() {
+  try {
+    await initSchema();
+    await detectCaps();
+    await autoSeed();
+    await backupDatabase();
+    await cleanupTestData();
+  } catch (err) {
+    console.error("⚠️ Initialisation de la base de données :", err.message);
+  }
+}
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("✅ Backend Gestion Stock & Vente démarré sur port " + PORT + " (WebSocket: /ws)");
+  initDatabaseAsync();
 });

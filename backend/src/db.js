@@ -1,10 +1,36 @@
 require("dotenv").config();
 const { Pool } = require("pg");
 
+const dbUrl = process.env.DATABASE_URL || "";
+
+// Déterminer SSL intelligemment :
+// - Sur le réseau interne Render (*.render.internal ou dpg-xxxx sans .render.com), SSL n'est pas supporté / nécessaire.
+// - Sur les connexions externes (ex: dpg-xxxx.oregon-postgres.render.com, Supabase, Neon), SSL est obligatoire.
+let sslConfig = undefined;
+const isInternalRender = (dbUrl.includes("render.internal") || dbUrl.includes("dpg-")) && !dbUrl.includes(".render.com");
+
+if (!isInternalRender) {
+  if (
+    process.env.PGSSL === "1" ||
+    dbUrl.includes("sslmode=require") ||
+    dbUrl.includes(".render.com") ||
+    dbUrl.includes("neon.tech") ||
+    dbUrl.includes("supabase.co")
+  ) {
+    sslConfig = { rejectUnauthorized: false };
+  }
+}
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: dbUrl,
   max: Number(process.env.PG_POOL_MAX) || 10,
-  ssl: process.env.PGSSL === '1' ? { rejectUnauthorized: false } : undefined
+  connectionTimeoutMillis: 10000, // Évite de bloquer indéfiniment si PostgreSQL est inaccessible
+  idleTimeoutMillis: 30000,
+  ssl: sslConfig
+});
+
+pool.on("error", (err) => {
+  console.error("⚠️ Erreur inattendue sur le pool PostgreSQL :", err.message);
 });
 
 // Exécute une transaction avec l'utilisateur courant renseigné pour le journal d'audit
